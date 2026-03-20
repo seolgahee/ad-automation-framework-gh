@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ad Automation — Perplexity Style</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' ws: wss: http://localhost:* https://localhost:*; img-src 'self' data:;" />
+  <!--
+    PRODUCTION NOTE: For deployment, generate SRI hashes for each script:
+      openssl dgst -sha384 -binary <file> | openssl base64 -A
+    Then add integrity="sha384-<hash>" crossorigin="anonymous" to each <script>.
+    Tailwind CDN is dynamic and incompatible with SRI — use the CLI build instead.
+  -->
+  <script src="https://cdn.tailwindcss.com/3.4.1"></script>
+  <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/recharts@2.12.0/umd/Recharts.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.24.0/babel.min.js" crossorigin="anonymous"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+          colors: {
+            ppl: {
+              teal: '#20B2AA',
+              bg: '#FAFAFA',
+              card: '#FFFFFF',
+              border: '#E8E8E8',
+              text: '#1A1A1A',
+              sub: '#6B7280',
+              hover: '#F3F4F6',
+              accent: '#14B8A6',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .typing-cursor::after { content: ''; display: inline-block; width: 2px; height: 1em; background: #20B2AA; margin-left: 2px; animation: blink 1s infinite; vertical-align: text-bottom; }
+    @keyframes blink { 0%,50% { opacity: 1 } 51%,100% { opacity: 0 } }
+    @keyframes fadeInUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+    .animate-in { animation: fadeInUp 0.4s ease-out forwards; }
+    @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+    .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #D1D5DB; border-radius: 4px; }
+    input:focus, select:focus { outline: none; box-shadow: 0 0 0 2px rgba(20,184,166,0.3); }
+  </style>
+</head>
+<body class="bg-ppl-bg text-ppl-text">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback, useMemo, Component } = React;
+    const { AreaChart, Area, LineChart, Line, BarChart, Bar, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } = Recharts;
+
+    // ─── Error Boundary (prevents full dashboard crash) ──────
+    class ErrorBoundary extends Component {
+      constructor(props) { super(props); this.state = { hasError: false, error: null }; }
+      static getDerivedStateFromError(error) { return { hasError: true, error }; }
+      componentDidCatch(error, info) { console.error('Dashboard error:', error, info); }
+      render() {
+        if (this.state.hasError) {
+          return (
+            <div className="flex items-center justify-center h-screen bg-ppl-bg">
+              <div className="bg-white rounded-2xl border border-red-200 p-8 max-w-md text-center shadow-sm">
+                <p className="text-lg font-semibold text-red-600 mb-2">Dashboard Error</p>
+                <p className="text-sm text-ppl-sub mb-4">{this.state.error?.message || 'An unexpected error occurred'}</p>
+                <button onClick={() => { this.setState({ hasError: false, error: null }); window.location.reload(); }}
+                  className="px-4 py-2 bg-ppl-teal text-white rounded-lg text-sm hover:bg-teal-600 transition-colors">
+                  Reload Dashboard
+                </button>
+              </div>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
+    }
+
+    // Locale-safe Korean number formatter (consistent across all browsers)
+    const krwFmt = new Intl.NumberFormat('ko-KR');
+
+    // Dynamic URL generation — works in dev (localhost) and production
+    const _host = window.location.hostname || 'localhost';
+    const _apiPort = '3099';
+    const API = `${window.location.protocol}//${_host}:${_apiPort}/api`;
+    const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${_host}:${_apiPort}/ws`;
+
+    // Auth token (set via URL param ?token=xxx or leave empty for dev mode)
+    const API_TOKEN = new URLSearchParams(window.location.search).get('token') || '';
+
+    /** Authenticated fetch wrapper — injects Bearer token if configured */
+    function apiFetch(url, options = {}) {
+      const headers = { 'Content-Type': 'application/json', ...options.headers };
+      if (API_TOKEN) headers['Authorization'] = `Bearer ${API_TOKEN}`;
+      return fetch(url, { ...options, headers });
+    }
+
+    // ─── Icons (inline SVG) ──────────────────────────────────
+    const Icons = {
+      search: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>,
+      globe: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>,
+      code: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>,
+      api: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>,
+      gear: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>,
+      chart: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>,
+      bell: <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
+      send: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>,
+      plus: <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+      sidebar: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>,
+      home: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>,
+      clock: <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
+      check: <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>,
+      play: <svg width="12" height="12" fill="currentColor" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>,
+      pause: <svg width="12" height="12" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>,
+      layers: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>,
+      beaker: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M4.5 3h15M6 3v7.5l-3.5 8A2 2 0 0 0 4.24 21h15.52a2 2 0 0 0 1.74-2.5L18 10.5V3"/><path d="M8.5 14h7"/></svg>,
+      users: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+      upload: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>,
+    };
+
+    // ─── Model Badge (Perplexity style) ──────────────────────
+    function ModelBadge({ model }) {
+      const colors = {
+        'Meta API': { bg: 'bg-blue-50', text: 'text-blue-600', dot: 'bg-blue-500' },
+        'Google API': { bg: 'bg-amber-50', text: 'text-amber-600', dot: 'bg-amber-500' },
+        'Optimizer': { bg: 'bg-purple-50', text: 'text-purple-600', dot: 'bg-purple-500' },
+        'Notifier': { bg: 'bg-emerald-50', text: 'text-emerald-600', dot: 'bg-emerald-500' },
+        'Collector': { bg: 'bg-rose-50', text: 'text-rose-600', dot: 'bg-rose-500' },
+      };
+      const c = colors[model] || { bg: 'bg-gray-50', text: 'text-gray-600', dot: 'bg-gray-500' };
+      return (
+        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${c.bg} ${c.text}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`}></span>
+          {model}
+        </span>
+      );
+    }
+
+    // ─── Subagent Step (Perplexity "Running Subagents" style) ─
+    function SubagentStep({ icon, text, model, status, delay }) {
+      return (
+        <div className="flex items-start gap-3 py-3 animate-in" style={{ animationDelay: `${delay}ms` }}>
+          <div className="mt-0.5 text-ppl-sub">{icon}</div>
+          <div className="flex-1 min-w-0">
+            <span className={`text-base leading-relaxed ${status === 'running' ? 'typing-cursor' : ''}`}>
+              {status === 'running' && <span className="text-ppl-teal font-medium">{text.slice(0, 8)}</span>}
+              {status === 'running' ? text.slice(8) : text}
+              {status === 'done' && ':'}
+            </span>
+            {model && <span className="ml-3"><ModelBadge model={model} /></span>}
+          </div>
+          {status === 'done' && <span className="text-emerald-500 mt-1">{Icons.check}</span>}
+          {status === 'running' && <span className="w-2 h-2 rounded-full bg-ppl-teal pulse-dot mt-2"></span>}
+        </div>
+      );
+    }
+
+    // ─── File Card (Perplexity attachment style) ─────────────
+    function FileCard({ name, size, icon }) {
+      return (
+        <div className="inline-flex items-center gap-3 px-4 py-3 rounded-xl border border-ppl-border bg-white hover:bg-ppl-hover transition-colors cursor-pointer">
+          <span className="text-ppl-sub">{icon || Icons.chart}</span>
+          <div>
+            <p className="text-sm font-medium text-ppl-text">{name}</p>
+            {size && <p className="text-xs text-ppl-sub">{size}</p>}
+          </div>
+        </div>
+      );
+    }
+
+    // ─── KPI Inline Card (Perplexity clean style) ────────────
+    function KPIRow({ label, value, change, good }) {
+      return (
+        <div className="flex items-center justify-between py-2.5 border-b border-ppl-border last:border-0">
+          <span className="text-sm text-ppl-sub">{label}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-base font-semibold">{value}</span>
+            {change !== undefined && (
+              <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${good ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'}`}>
+                {change >= 0 ? '+' : ''}{change.toFixed(1)}%
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Campaign Row (clean Perplexity style) ───────────────
+    function CampaignRow({ campaign, onStatusChange }) {
+      const c = campaign;
+      return (
+        <div className="flex items-center gap-4 py-3 border-b border-ppl-border last:border-0 hover:bg-ppl-hover rounded-lg px-3 -mx-3 transition-colors">
+          <span className={`shrink-0 px-2 py-0.5 rounded-md text-xs font-medium ${c.platform === 'meta' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
+            {c.platform === 'meta' ? 'Meta' : 'Google'}
+          </span>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium truncate">{c.name}</p>
+            <p className="text-xs text-ppl-sub">ROAS {(c.week_roas || 0).toFixed(2)} · CPA ₩{krwFmt.format(Math.round(c.today_spend && c.today_conversions ? c.today_spend / c.today_conversions : 0))}</p>
+          </div>
+          <div className="text-right shrink-0">
+            <p className="text-sm font-medium">₩{krwFmt.format(c.today_spend || 0)}</p>
+            <p className="text-xs text-ppl-sub">/ ₩{krwFmt.format(c.daily_budget || 0)}</p>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className={`w-1.5 h-1.5 rounded-full ${c.status === 'ACTIVE' ? 'bg-emerald-500' : 'bg-amber-400'}`}></span>
+            <button
+              onClick={() => onStatusChange(c.id, c.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE')}
+              className="p-1.5 rounded-lg hover:bg-gray-100 text-ppl-sub transition-colors"
+              title={c.status === 'ACTIVE' ? 'Pause' : 'Resume'}
+            >
+              {c.status === 'ACTIVE' ? Icons.pause : Icons.play}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Alert Item (clean) ──────────────────────────────────
+    function AlertItem({ alert }) {
+      const severityStyles = {
+        critical: 'border-l-red-500 bg-red-50/50',
+        warning: 'border-l-amber-500 bg-amber-50/50',
+        info: 'border-l-blue-500 bg-blue-50/50',
+      };
+      return (
+        <div className={`px-4 py-3 rounded-lg border-l-3 ${severityStyles[alert.severity] || severityStyles.info} mb-2`} style={{borderLeftWidth: '3px'}}>
+          <p className="text-sm">{alert.message}</p>
+          <p className="text-xs text-ppl-sub mt-1 flex items-center gap-1">{Icons.clock} {alert.created_at}</p>
+        </div>
+      );
+    }
+
+    // ─── Chat Message ────────────────────────────────────────
+    function ChatMessage({ role, children }) {
+      if (role === 'user') {
+        return (
+          <div className="mb-8 animate-in">
+            <div className="max-w-2xl mx-auto">
+              <div className="bg-white rounded-2xl border border-ppl-border px-5 py-4 shadow-sm">
+                {children}
+              </div>
+            </div>
+          </div>
+        );
+      }
+      return (
+        <div className="mb-8 animate-in">
+          <div className="max-w-4xl mx-auto">
+            {children}
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Perplexity-style Chart Tooltip ──────────────────────
+    function CustomTooltip({ active, payload, label }) {
+      if (!active || !payload?.length) return null;
+      return (
+        <div className="bg-white rounded-xl shadow-lg border border-ppl-border px-4 py-3">
+          <p className="text-xs text-ppl-sub mb-1">{label}</p>
+          {payload.map((p, i) => (
+            <p key={i} className="text-sm font-medium" style={{ color: p.color }}>
+              {p.name}: {typeof p.value === 'number' ? krwFmt.format(p.value) : p.value}
+            </p>
+          ))}
+        </div>
+      );
+    }
+
+    // ═══ MAIN APP ════════════════════════════════════════════
+    function App() {
+      const [overview, setOverview] = useState(null);
+      const [campaigns, setCampaigns] = useState([]);
+      const [timeline, setTimeline] = useState([]);
+      const [alerts, setAlerts] = useState([]);
+      const [days, setDays] = useState(7);
+      const today = new Date().toISOString().split('T')[0];
+      const defaultSince = new Date(Date.now() - 6 * 86400000).toISOString().split('T')[0];
+      const [dateRange, setDateRange] = useState({ since: defaultSince, until: today });
+      const [connected, setConnected] = useState(false);
+      const [sidebarOpen, setSidebarOpen] = useState(true);
+      const [inputValue, setInputValue] = useState('');
+      const [chatHistory, setChatHistory] = useState([]);
+      const [activeView, setActiveView] = useState('dashboard');
+      const [selectedPlatform, setSelectedPlatform] = useState('all');
+      const ws = useRef(null);
+      const chatEndRef = useRef(null);
+
+      // ─── Content data state (declared before useEffect that references it) ───
+      const [creatives, setCreatives] = useState([]);
+      const [templates, setTemplates] = useState([]);
+      const [abTests, setAbTests] = useState([]);
+      const [audiences, setAudiences] = useState([]);
+      const [contentTab, setContentTab] = useState('creatives');
+      const [uploadForm, setUploadForm] = useState({ templateId: '', variables: {}, mediaPath: '', landingUrl: '', campaignId: '', adSetId: '', pageId: '', abGroup: '', persona_tag: '', desire_tag: '', awareness_stage: '' });
+      const [uploadStatus, setUploadStatus] = useState(null);
+      const [uploadError, setUploadError] = useState('');
+      const [uploadResult, setUploadResult] = useState(null);
+
+      const PDA_OPTIONS = {
+        persona: [
+          { value: 'busy_professional', label: '야근하는 직장인' },
+          { value: 'tired_parent',      label: '육아에 지친 부모' },
+          { value: 'budget_conscious',  label: '절약형 소비자' },
+          { value: 'health_seeker',     label: '건강 관심층' },
+          { value: 'trend_follower',    label: '트렌드 팔로워' },
+        ],
+        desire: [
+          { value: 'efficiency',         label: '효율/시간 절약' },
+          { value: 'social_recognition', label: '사회적 인정' },
+          { value: 'safety_trust',       label: '안전/신뢰' },
+          { value: 'saving',             label: '절약/가성비' },
+          { value: 'achievement',        label: '성취/자기계발' },
+        ],
+        awareness: [
+          { value: 'unaware',        label: 'Unaware — 문제 인식 전' },
+          { value: 'problem_aware',  label: 'Problem-aware — 문제 인식' },
+          { value: 'solution_aware', label: 'Solution-aware — 해결책 탐색' },
+          { value: 'product_aware',  label: 'Product-aware — 제품 인지' },
+          { value: 'ready_to_buy',   label: 'Ready-to-buy — 구매 준비' },
+        ],
+      };
+
+      const fetchContentData = useCallback(async () => {
+        try {
+          const [cr, tpl, ab, aud] = await Promise.all([
+            apiFetch(`${API}/creatives`).then(r => r.json()).catch(() => []),
+            apiFetch(`${API}/templates`).then(r => r.json()).catch(() => []),
+            apiFetch(`${API}/ab-tests`).then(r => r.json()).catch(() => []),
+            apiFetch(`${API}/audiences`).then(r => r.json()).catch(() => []),
+          ]);
+          setCreatives(cr);
+          setTemplates(tpl);
+          setAbTests(ab);
+          setAudiences(aud);
+        } catch (err) { console.error('Content fetch failed:', err); }
+      }, []);
+
+      const fetchData = useCallback(async () => {
+        try {
+          const platformParam = selectedPlatform !== 'all' ? `&platform=${selectedPlatform}` : '';
+          const isOverview = activeView === 'overview';
+          const rangeParam = isOverview
+            ? `&since=${dateRange.since}&until=${dateRange.until}`
+            : `&days=${days}`;
+          const [ov, camp, tl, al] = await Promise.all([
+            apiFetch(`${API}/overview?${isOverview ? `since=${dateRange.since}&until=${dateRange.until}` : `days=${days}`}${platformParam}`).then(r => r.json()),
+            apiFetch(`${API}/campaigns`).then(r => r.json()),
+            apiFetch(`${API}/performance/timeline?${isOverview ? `since=${dateRange.since}&until=${dateRange.until}` : `days=${days}`}${platformParam}`).then(r => r.json()),
+            apiFetch(`${API}/alerts?limit=10`).then(r => r.json()),
+          ]);
+          setOverview(ov);
+          setCampaigns(camp);
+          setTimeline(tl);
+          setAlerts(al);
+        } catch (err) {
+          console.error('Fetch failed:', err);
+        }
+      }, [days, selectedPlatform, activeView, dateRange]);
+
+      useEffect(() => {
+        fetchData();
+        fetchContentData();
+        ws.current = new WebSocket(WS_URL);
+        ws.current.onopen = () => setConnected(true);
+        ws.current.onclose = () => setConnected(false);
+        ws.current.onmessage = (e) => {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'performance_update') fetchData();
+          if (['creative_assembled', 'creative_registered', 'pipeline_complete', 'ab_test_created', 'ab_test_evaluated', 'audience_created'].includes(msg.type)) fetchContentData();
+        };
+        const interval = setInterval(fetchData, 60000);
+        return () => { clearInterval(interval); ws.current?.close(); };
+      }, [fetchData, fetchContentData]);
+
+      const handleCreativeUpload = async () => {
+        setUploadStatus('loading');
+        setUploadError('');
+        setUploadResult(null);
+        try {
+          const res = await apiFetch(`${API}/creatives/pipeline`, {
+            method: 'POST',
+            body: JSON.stringify({
+              platform: 'meta',
+              templateId: uploadForm.templateId,
+              variables: uploadForm.variables,
+              campaignId: uploadForm.campaignId,
+              adSetId: uploadForm.adSetId,
+              ...(uploadForm.mediaPath && { mediaPath: uploadForm.mediaPath }),
+              landingUrl: uploadForm.landingUrl,
+              pageId: uploadForm.pageId,
+              ...(uploadForm.abGroup && { abGroup: uploadForm.abGroup }),
+              ...(uploadForm.persona_tag && { persona_tag: uploadForm.persona_tag }),
+              ...(uploadForm.desire_tag && { desire_tag: uploadForm.desire_tag }),
+              ...(uploadForm.awareness_stage && { awareness_stage: uploadForm.awareness_stage }),
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || '등록 실패');
+          setUploadResult(data);
+          setUploadStatus('success');
+          fetchContentData();
+        } catch (err) {
+          setUploadError(err.message);
+          setUploadStatus('error');
+        }
+      };
+
+      const handleStatusChange = async (id, status) => {
+        try {
+          await apiFetch(`${API}/campaigns/${id}/status`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status }),
+          });
+          fetchData();
+        } catch (err) {
+          console.error('Status change failed:', err);
+        }
+      };
+
+      const chartData = useMemo(() => timeline.reduce((acc, row) => {
+        const existing = acc.find(d => d.date === row.date);
+        if (existing) {
+          existing.spend += row.spend;
+          existing.conversions += row.conversions;
+          existing.value += row.value || 0;
+          existing.clicks = (existing.clicks || 0) + (row.clicks || 0);
+          existing.impressions = (existing.impressions || 0) + (row.impressions || 0);
+          existing.roas = existing.spend > 0 ? existing.value / existing.spend : 0;
+          existing.cpc = existing.clicks > 0 ? existing.spend / existing.clicks : 0;
+          existing.ctr = existing.impressions > 0 ? (existing.clicks / existing.impressions) * 100 : 0;
+        } else {
+          acc.push({
+            date: row.date,
+            spend: row.spend,
+            conversions: row.conversions,
+            value: row.value || 0,
+            clicks: row.clicks || 0,
+            impressions: row.impressions || 0,
+            roas: row.roas || 0,
+            cpc: row.cpc || 0,
+            ctr: row.ctr || 0,
+          });
+        }
+        return acc;
+      }, []), [timeline]);
+
+      const handleSend = async () => {
+        if (!inputValue.trim()) return;
+        const userText = inputValue.trim();
+        setChatHistory(prev => [...prev, { role: 'user', text: userText }]);
+        setInputValue('');
+        try {
+          const res = await apiFetch(`${API}/chat`, {
+            method: 'POST',
+            body: JSON.stringify({ message: userText }),
+          });
+          const data = await res.json();
+          setChatHistory(prev => [...prev, { role: 'agent', text: data.reply || data.error || '응답 없음' }]);
+        } catch (e) {
+          setChatHistory(prev => [...prev, { role: 'agent', text: '서버 연결 오류. 다시 시도해주세요.' }]);
+        }
+      };
+
+      // ─── Sidebar ─────────────────────────────────
+      const Sidebar = () => (
+        <div className={`${sidebarOpen ? 'w-64' : 'w-0'} shrink-0 border-r border-ppl-border bg-white transition-all duration-300 overflow-hidden flex flex-col`}>
+          <div className="p-4 border-b border-ppl-border">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-7 h-7 rounded-lg bg-ppl-teal flex items-center justify-center">
+                <span className="text-white text-xs font-bold">A</span>
+              </div>
+              <span className="font-semibold text-sm">Ad Automation</span>
+            </div>
+            <button className="w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-ppl-bg hover:bg-gray-100 text-sm text-ppl-sub transition-colors">
+              {Icons.plus}
+              <span>New Thread</span>
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto scrollbar-thin p-3">
+            <p className="text-xs font-medium text-ppl-sub uppercase tracking-wider px-2 mb-2">Menu</p>
+            {[
+              { icon: Icons.home, label: 'Overview', view: 'overview' },
+              { icon: Icons.chart, label: 'Dashboard', view: 'dashboard' },
+            ].map((item, i) => (
+              <button key={i} onClick={() => setActiveView(item.view)}
+                className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${activeView === item.view ? 'bg-ppl-teal text-white' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
+                {item.icon}
+                <span>{item.label}</span>
+              </button>
+            ))}
+
+            <p className="text-xs font-medium text-ppl-sub uppercase tracking-wider px-2 mb-2 mt-6">Recent</p>
+            {['Meta ROAS 분석', 'Google 예산 최적화', '주간 성과 리포트', '봄 프로모션 세팅'].map((item, i) => (
+              <button key={i} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-ppl-hover transition-colors truncate text-ppl-sub hover:text-ppl-text">
+                {item}
+              </button>
+            ))}
+
+            <p className="text-xs font-medium text-ppl-sub uppercase tracking-wider px-2 mb-2 mt-6">Content</p>
+            {[
+              { icon: Icons.layers, label: 'Creatives', tab: 'creatives' },
+              { icon: Icons.code, label: 'Templates', tab: 'templates' },
+              { icon: Icons.beaker, label: 'A/B Tests', tab: 'ab-tests' },
+              { icon: Icons.users, label: 'Audiences', tab: 'audiences' },
+              { icon: Icons.upload, label: 'Creative Upload', tab: 'upload' },
+            ].map((item, i) => (
+              <button key={i} onClick={() => setContentTab(item.tab)}
+                className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-ppl-hover transition-colors text-ppl-sub hover:text-ppl-text flex items-center gap-2">
+                {item.icon}
+                <span>{item.label}</span>
+              </button>
+            ))}
+
+            <p className="text-xs font-medium text-ppl-sub uppercase tracking-wider px-2 mb-2 mt-6">Scheduled</p>
+            <button className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-ppl-hover transition-colors text-ppl-sub hover:text-ppl-text flex items-center gap-2">
+              {Icons.clock}
+              <span>15분 주기 데이터 수집</span>
+            </button>
+          </div>
+
+          <div className="p-3 border-t border-ppl-border">
+            <div className="flex items-center gap-2 px-3 py-2">
+              <span className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-500' : 'bg-red-400'}`}></span>
+              <span className="text-xs text-ppl-sub">{connected ? 'Connected' : 'Offline'}</span>
+            </div>
+          </div>
+        </div>
+      );
+
+      // ─── Content Studio Panel ────────────────────────
+      const ContentStudioPanel = () => {
+        const statusBadge = (status) => {
+          const styles = {
+            DRAFT: 'bg-gray-100 text-gray-600',
+            UPLOADED: 'bg-blue-50 text-blue-600',
+            ACTIVE: 'bg-emerald-50 text-emerald-600',
+            PAUSED: 'bg-amber-50 text-amber-600',
+            SETUP: 'bg-gray-100 text-gray-600',
+            RUNNING: 'bg-blue-50 text-blue-600',
+            COMPLETED: 'bg-emerald-50 text-emerald-600',
+          };
+          return <span className={`px-2 py-0.5 rounded-md text-xs font-medium ${styles[status] || 'bg-gray-100 text-gray-600'}`}>{status}</span>;
+        };
+
+        const contentTabs = [
+          { id: 'creatives', label: 'Creatives', count: creatives.length },
+          { id: 'templates', label: 'Templates', count: templates.length },
+          { id: 'ab-tests', label: 'A/B Tests', count: abTests.length },
+          { id: 'audiences', label: 'Audiences', count: audiences.length },
+          { id: 'upload', label: 'Creative Upload', count: 0 },
+        ];
+
+        return (
+          <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Content Studio</h3>
+              <div className="flex gap-1">
+                {contentTabs.map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setContentTab(tab.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${contentTab === tab.id ? 'bg-ppl-teal text-white' : 'bg-ppl-bg text-ppl-sub hover:bg-gray-100'}`}
+                  >
+                    {tab.label}
+                    {tab.count > 0 && <span className="ml-1 opacity-70">({tab.count})</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Creatives Tab */}
+            {contentTab === 'creatives' && (
+              <div>
+                {creatives.length === 0 ? (
+                  <div className="text-center py-10 text-ppl-sub">
+                    <p className="text-sm mb-2">No creatives yet</p>
+                    <p className="text-xs">Use chat command <code className="bg-ppl-bg px-1.5 py-0.5 rounded">광고 등록</code> or the API to assemble creatives</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {creatives.slice(0, 10).map(c => (
+                      <div key={c.id} className="flex items-center gap-3 py-2.5 px-3 -mx-3 rounded-lg hover:bg-ppl-hover transition-colors border-b border-ppl-border last:border-0">
+                        <span className={`shrink-0 px-2 py-0.5 rounded-md text-xs font-medium ${c.platform === 'meta' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
+                          {c.platform === 'meta' ? 'Meta' : 'Google'}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{c.name}</p>
+                          <p className="text-xs text-ppl-sub truncate">{c.headline}</p>
+                        </div>
+                        {c.ab_group && <span className="text-xs bg-purple-50 text-purple-600 px-2 py-0.5 rounded-md font-medium">{c.ab_group}</span>}
+                        {c.awareness_stage && (
+                          <span className="text-xs bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-md font-medium" title={`${c.persona_tag} × ${c.desire_tag} × ${c.awareness_stage}`}>
+                            {c.awareness_stage.replace('_', '-')}
+                          </span>
+                        )}
+                        {statusBadge(c.status)}
+                        <span className="text-xs text-ppl-sub">{c.created_at?.slice(0, 10)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Templates Tab */}
+            {contentTab === 'templates' && (
+              <div>
+                {templates.length === 0 ? (
+                  <div className="text-center py-10 text-ppl-sub">
+                    <p className="text-sm">Loading templates...</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    {templates.map(tpl => (
+                      <div key={tpl.id} className="rounded-xl border border-ppl-border p-4 hover:border-ppl-teal transition-colors cursor-pointer group">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className={`px-2 py-0.5 rounded-md text-xs font-medium ${tpl.platform === 'meta' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
+                            {tpl.platform === 'meta' ? 'Meta' : 'Google'}
+                          </span>
+                          {tpl.is_builtin ? <span className="text-xs text-ppl-sub">Built-in</span> : <span className="text-xs text-emerald-600">Custom</span>}
+                        </div>
+                        <p className="text-sm font-medium mb-1 group-hover:text-ppl-teal transition-colors">{tpl.name}</p>
+                        <p className="text-xs text-ppl-sub line-clamp-2">{tpl.headline}</p>
+                        {tpl.variables_json && (
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {JSON.parse(tpl.variables_json).slice(0, 4).map(v => (
+                              <span key={v} className="text-[10px] bg-ppl-bg text-ppl-sub px-1.5 py-0.5 rounded">{`{{${v}}}`}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* A/B Tests Tab */}
+            {contentTab === 'ab-tests' && (
+              <div>
+                {abTests.length === 0 ? (
+                  <div className="text-center py-10 text-ppl-sub">
+                    <p className="text-sm mb-2">No A/B tests yet</p>
+                    <p className="text-xs">Use chat command <code className="bg-ppl-bg px-1.5 py-0.5 rounded">A/B 테스트</code> to create tests</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {abTests.map(test => {
+                      const variants = test.variants_json ? JSON.parse(test.variants_json) : [];
+                      return (
+                        <div key={test.id} className="rounded-xl border border-ppl-border p-4">
+                          <div className="flex items-center justify-between mb-3">
+                            <div>
+                              <p className="text-sm font-medium">{test.name}</p>
+                              <p className="text-xs text-ppl-sub">{test.platform} · {variants.length} variants · Min {test.min_impressions} impressions</p>
+                            </div>
+                            {statusBadge(test.status)}
+                          </div>
+                          {/* Variant bars */}
+                          <div className="space-y-1.5">
+                            {variants.slice(0, 5).map((v, i) => (
+                              <div key={i} className="flex items-center gap-2">
+                                <span className="text-xs font-medium w-16 shrink-0">{v.label}</span>
+                                <div className="flex-1 bg-ppl-bg rounded-full h-2 overflow-hidden">
+                                  <div className="h-full rounded-full bg-ppl-teal" style={{ width: `${Math.max(10, 100 / (variants.length || 1) * (i + 1) / variants.length * 100)}%`, opacity: test.winner_id === v.creativeId ? 1 : 0.4 }}></div>
+                                </div>
+                                {test.winner_id === v.creativeId && <span className="text-xs text-emerald-600 font-medium">Winner</span>}
+                              </div>
+                            ))}
+                          </div>
+                          {test.started_at && <p className="text-xs text-ppl-sub mt-2">Started: {test.started_at}</p>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Audiences Tab */}
+            {contentTab === 'audiences' && (
+              <div>
+                {audiences.length === 0 ? (
+                  <div className="text-center py-10 text-ppl-sub">
+                    <p className="text-sm mb-2">No audiences created yet</p>
+                    <p className="text-xs">Use chat command <code className="bg-ppl-bg px-1.5 py-0.5 rounded">오디언스</code> or the API to create audiences</p>
+                    <div className="mt-4">
+                      <p className="text-xs font-medium text-ppl-text mb-2">Available Targeting Presets</p>
+                      <div className="flex flex-wrap gap-2 justify-center">
+                        {['KR 18-44 Broad', 'KR 18-34 Female', 'KR 25-54 Professionals', 'Seoul Metro'].map(p => (
+                          <span key={p} className="text-xs bg-purple-50 text-purple-600 px-2.5 py-1 rounded-lg">{p}</span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {audiences.map(aud => (
+                      <div key={aud.id} className="flex items-center gap-3 py-2.5 px-3 -mx-3 rounded-lg hover:bg-ppl-hover transition-colors border-b border-ppl-border last:border-0">
+                        <span className={`shrink-0 px-2 py-0.5 rounded-md text-xs font-medium ${aud.platform === 'meta' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
+                          {aud.platform === 'meta' ? 'Meta' : 'Google'}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{aud.name}</p>
+                          <p className="text-xs text-ppl-sub">{aud.type} · {aud.source}</p>
+                        </div>
+                        {aud.size_estimate > 0 && <span className="text-xs text-ppl-sub">{krwFmt.format(aud.size_estimate)} users</span>}
+                        {statusBadge(aud.status)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Creative Upload Tab */}
+            {contentTab === 'upload' && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-md font-medium">Meta 전용</span>
+                  <p className="text-xs text-ppl-sub">템플릿 기반으로 Meta 광고 소재를 등록합니다.</p>
+                </div>
+
+                {/* 템플릿 선택 */}
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">템플릿 *</label>
+                  <select
+                    value={uploadForm.templateId}
+                    onChange={e => setUploadForm(prev => ({ ...prev, templateId: e.target.value, variables: {} }))}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white"
+                  >
+                    <option value="">-- 템플릿 선택 --</option>
+                    {templates.filter(t => t.platform === 'meta').map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                  {templates.filter(t => t.platform === 'meta').length === 0 && (
+                    <p className="text-xs text-amber-600 mt-1">Meta 템플릿이 없습니다. 먼저 템플릿을 생성하세요.</p>
+                  )}
+                </div>
+
+                {/* 변수 입력 (선택된 템플릿 기반 동적 생성) */}
+                {uploadForm.templateId && (() => {
+                  const tpl = templates.find(t => t.id === uploadForm.templateId);
+                  const vars = tpl?.variables_json ? JSON.parse(tpl.variables_json) : [];
+                  return vars.length > 0 ? (
+                    <div>
+                      <label className="block text-xs font-medium text-ppl-text mb-1.5">템플릿 변수</label>
+                      <div className="space-y-2 bg-ppl-bg rounded-xl p-3">
+                        {vars.map(v => (
+                          <div key={v} className="flex items-center gap-2">
+                            <span className="text-xs text-ppl-sub w-28 shrink-0 font-mono">{`{{${v}}}`}</span>
+                            <input
+                              type="text"
+                              placeholder={v}
+                              value={uploadForm.variables[v] || ''}
+                              onChange={e => setUploadForm(prev => ({ ...prev, variables: { ...prev.variables, [v]: e.target.value } }))}
+                              className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-1.5 bg-white"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null;
+                })()}
+
+                {/* 이미지 경로 */}
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">이미지 경로 (선택 — 서버 로컬 경로)</label>
+                  <input
+                    type="text"
+                    placeholder="C:\images\banner.jpg"
+                    value={uploadForm.mediaPath}
+                    onChange={e => setUploadForm(prev => ({ ...prev, mediaPath: e.target.value }))}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white font-mono"
+                  />
+                </div>
+
+                {/* 랜딩 URL */}
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">랜딩 URL *</label>
+                  <input
+                    type="text"
+                    placeholder="https://example.com/landing"
+                    value={uploadForm.landingUrl}
+                    onChange={e => setUploadForm(prev => ({ ...prev, landingUrl: e.target.value }))}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white"
+                  />
+                </div>
+
+                <hr className="border-ppl-border" />
+                <p className="text-xs font-medium text-ppl-sub uppercase tracking-wider">Meta 등록 정보</p>
+
+                {/* 캠페인 선택 */}
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">캠페인 *</label>
+                  <select
+                    value={uploadForm.campaignId}
+                    onChange={e => setUploadForm(prev => ({ ...prev, campaignId: e.target.value }))}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white"
+                  >
+                    <option value="">-- 캠페인 선택 --</option>
+                    {campaigns.filter(c => c.platform === 'meta').map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Ad Set ID + Page ID */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">Ad Set ID *</label>
+                    <input
+                      type="text"
+                      placeholder="123456789"
+                      value={uploadForm.adSetId}
+                      onChange={e => setUploadForm(prev => ({ ...prev, adSetId: e.target.value }))}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">Page ID *</label>
+                    <input
+                      type="text"
+                      placeholder="Facebook Page ID"
+                      value={uploadForm.pageId}
+                      onChange={e => setUploadForm(prev => ({ ...prev, pageId: e.target.value }))}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white"
+                    />
+                  </div>
+                </div>
+
+                {/* A/B 그룹 */}
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">A/B 그룹 (선택)</label>
+                  <input
+                    type="text"
+                    placeholder="A, B, Control ..."
+                    value={uploadForm.abGroup}
+                    onChange={e => setUploadForm(prev => ({ ...prev, abGroup: e.target.value }))}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white"
+                  />
+                </div>
+
+                <hr className="border-ppl-border" />
+                <div className="flex items-center gap-2">
+                  <p className="text-xs font-medium text-ppl-sub uppercase tracking-wider">P.D.A 태그</p>
+                  <span className="text-xs bg-purple-50 text-purple-600 px-2 py-0.5 rounded-md">Andromeda 의미론적 다양성</span>
+                </div>
+                <p className="text-xs text-ppl-sub -mt-2">동일 캠페인 내 Persona·Desire·Awareness 조합이 겹치면 Self-competition 발생</p>
+
+                {/* Persona */}
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">Persona — 누구에게</label>
+                  <select
+                    value={uploadForm.persona_tag}
+                    onChange={e => setUploadForm(prev => ({ ...prev, persona_tag: e.target.value }))}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white"
+                  >
+                    <option value="">-- 선택 --</option>
+                    {PDA_OPTIONS.persona.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+
+                {/* Desire */}
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">Desire — 어떤 욕구</label>
+                  <select
+                    value={uploadForm.desire_tag}
+                    onChange={e => setUploadForm(prev => ({ ...prev, desire_tag: e.target.value }))}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white"
+                  >
+                    <option value="">-- 선택 --</option>
+                    {PDA_OPTIONS.desire.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+
+                {/* Awareness */}
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">Awareness — 인지 단계</label>
+                  <select
+                    value={uploadForm.awareness_stage}
+                    onChange={e => setUploadForm(prev => ({ ...prev, awareness_stage: e.target.value }))}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white"
+                  >
+                    <option value="">-- 선택 --</option>
+                    {PDA_OPTIONS.awareness.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+
+                {/* P.D.A 조합 미리보기 */}
+                {(uploadForm.persona_tag || uploadForm.desire_tag || uploadForm.awareness_stage) && (
+                  <div className="bg-purple-50 rounded-xl px-3 py-2.5 text-xs text-purple-700 flex items-center gap-2">
+                    <span className="font-medium">조합:</span>
+                    <span>{uploadForm.persona_tag || '?'}</span>
+                    <span className="text-purple-400">×</span>
+                    <span>{uploadForm.desire_tag || '?'}</span>
+                    <span className="text-purple-400">×</span>
+                    <span>{uploadForm.awareness_stage || '?'}</span>
+                  </div>
+                )}
+
+                {/* 에러 / 성공 메시지 */}
+                {uploadStatus === 'error' && (
+                  <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{uploadError}</div>
+                )}
+                {uploadStatus === 'success' && uploadResult && (
+                  <div className="text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2 space-y-0.5">
+                    <p className="font-medium">등록 완료</p>
+                    <p className="text-xs text-emerald-600">Creative ID: {uploadResult.creativeId}</p>
+                  </div>
+                )}
+
+                {/* 제출 버튼 */}
+                <button
+                  onClick={handleCreativeUpload}
+                  disabled={uploadStatus === 'loading' || !uploadForm.templateId || !uploadForm.landingUrl || !uploadForm.campaignId || !uploadForm.adSetId || !uploadForm.pageId}
+                  className="w-full py-2.5 rounded-xl bg-blue-500 text-white text-sm font-medium hover:bg-blue-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {uploadStatus === 'loading' ? (
+                    <><span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>등록 중...</>
+                  ) : (
+                    <>{Icons.upload}Meta에 광고 등록</>
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      };
+
+      // ─── Overview Panel ──────────────────────────────
+
+      const OverviewPanel = () => (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-2xl font-bold text-ppl-text">Performance Overview</h2>
+              <p className="text-sm text-ppl-sub mt-1">{selectedPlatform === 'all' ? '전체 매체' : selectedPlatform === 'meta' ? 'Meta' : 'Google'} · 실시간 성과</p>
+            </div>
+
+            {/* 날짜 선택 */}
+            <div className="flex items-center gap-2 bg-white border border-ppl-border rounded-2xl px-4 py-3 shadow-sm">
+              <div className="flex flex-col">
+                <span className="text-[10px] text-ppl-sub mb-0.5">시작일</span>
+                <input
+                  type="date"
+                  value={dateRange.since}
+                  max={dateRange.until}
+                  onChange={e => setDateRange(prev => ({ ...prev, since: e.target.value }))}
+                  className="text-sm border border-ppl-border rounded-lg px-2 py-1 bg-white cursor-pointer"
+                />
+              </div>
+              <span className="text-ppl-sub mt-4">~</span>
+              <div className="flex flex-col">
+                <span className="text-[10px] text-ppl-sub mb-0.5">종료일</span>
+                <input
+                  type="date"
+                  value={dateRange.until}
+                  min={dateRange.since}
+                  max={today}
+                  onChange={e => setDateRange(prev => ({ ...prev, until: e.target.value }))}
+                  className="text-sm border border-ppl-border rounded-lg px-2 py-1 bg-white cursor-pointer"
+                />
+              </div>
+            </div>
+          </div>
+
+          {overview && (
+            <>
+              {/* KPI 카드 */}
+              <div className="grid grid-cols-5 gap-4">
+                {[
+                  { label: '지출금액', value: `₩${krwFmt.format(Math.round(overview.totalSpend || 0))}`, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-100' },
+                  { label: '구매전환값', value: `₩${krwFmt.format(Math.round(overview.totalValue || 0))}`, color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-100' },
+                  { label: 'ROAS', value: (overview.roas || 0).toFixed(2), color: overview.roas >= 1.5 ? 'text-emerald-600' : 'text-red-500', bg: overview.roas >= 1.5 ? 'bg-emerald-50' : 'bg-red-50', border: overview.roas >= 1.5 ? 'border-emerald-100' : 'border-red-100' },
+                  { label: 'CPC', value: `₩${krwFmt.format(Math.round(overview.cpc || 0))}`, color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-100' },
+                  { label: 'CTR', value: `${(overview.ctr || 0).toFixed(2)}%`, color: 'text-teal-600', bg: 'bg-teal-50', border: 'border-teal-100' },
+                ].map((kpi, i) => (
+                  <div key={i} className={`rounded-2xl p-5 ${kpi.bg} border ${kpi.border}`}>
+                    <p className="text-sm text-ppl-sub mb-2">{kpi.label}</p>
+                    <p className={`text-2xl font-bold ${kpi.color}`}>{kpi.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* 차트 */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* 왼쪽: 지출금액 + ROAS */}
+                <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
+                  <div className="flex items-center gap-4 mb-4">
+                    <p className="text-base font-semibold">지출금액 &amp; ROAS</p>
+                    <div className="flex items-center gap-3 ml-auto">
+                      <span className="flex items-center gap-1.5 text-xs text-ppl-sub"><span className="w-3 h-0.5 bg-blue-500 inline-block rounded"></span>지출금액</span>
+                      <span className="flex items-center gap-1.5 text-xs text-ppl-sub"><span className="w-3 h-0.5 bg-teal-500 inline-block rounded"></span>ROAS</span>
+                    </div>
+                  </div>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <ComposedChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
+                      <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
+                      <YAxis yAxisId="spend" orientation="left" tick={{ fontSize: 10, fill: '#3B82F6' }} axisLine={false} tickLine={false} tickFormatter={v => `₩${(v/10000).toFixed(0)}만`} />
+                      <YAxis yAxisId="roas" orientation="right" tick={{ fontSize: 10, fill: '#14B8A6' }} axisLine={false} tickLine={false} tickFormatter={v => v.toFixed(1)} />
+                      <Tooltip content={CustomTooltip} />
+                      <Bar yAxisId="spend" dataKey="spend" name="지출금액" fill="#3B82F6" fillOpacity={0.7} radius={[4, 4, 0, 0]} />
+                      <Line yAxisId="roas" type="monotone" dataKey="roas" name="ROAS" stroke="#14B8A6" strokeWidth={2.5} dot={{ r: 3, fill: '#14B8A6' }} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* 오른쪽: CPC + CTR */}
+                <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
+                  <div className="flex items-center gap-4 mb-4">
+                    <p className="text-base font-semibold">CPC &amp; CTR</p>
+                    <div className="flex items-center gap-3 ml-auto">
+                      <span className="flex items-center gap-1.5 text-xs text-ppl-sub"><span className="w-3 h-0.5 bg-purple-500 inline-block rounded"></span>CPC</span>
+                      <span className="flex items-center gap-1.5 text-xs text-ppl-sub"><span className="w-3 h-0.5 bg-amber-500 inline-block rounded"></span>CTR</span>
+                    </div>
+                  </div>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <ComposedChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
+                      <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
+                      <YAxis yAxisId="cpc" orientation="left" tick={{ fontSize: 10, fill: '#A855F7' }} axisLine={false} tickLine={false} tickFormatter={v => `₩${v.toFixed(0)}`} />
+                      <YAxis yAxisId="ctr" orientation="right" tick={{ fontSize: 10, fill: '#F59E0B' }} axisLine={false} tickLine={false} tickFormatter={v => `${v.toFixed(2)}%`} />
+                      <Tooltip content={CustomTooltip} />
+                      <Bar yAxisId="cpc" dataKey="cpc" name="CPC" fill="#A855F7" fillOpacity={0.7} radius={[4, 4, 0, 0]} />
+                      <Line yAxisId="ctr" type="monotone" dataKey="ctr" name="CTR" stroke="#F59E0B" strokeWidth={2.5} dot={{ r: 3, fill: '#F59E0B' }} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      );
+
+      // ─── Dashboard Panel (inline in chat, Perplexity style) ─
+      const DashboardPanel = () => (
+        <div className="space-y-6">
+          {/* Subagent execution steps */}
+          <div className="border-b border-ppl-border pb-4">
+            <p className="text-xs font-medium text-ppl-sub uppercase tracking-wider mb-3">Running Subagents</p>
+            <SubagentStep icon={Icons.globe} text="Fetching Meta campaign insights and today's spend data" model="Meta API" status="done" delay={0} />
+            <SubagentStep icon={Icons.globe} text="Fetching Google Ads performance metrics via GAQL" model="Google API" status="done" delay={100} />
+            <SubagentStep icon={Icons.gear} text="Normalizing cross-platform data and computing KPIs" model="Optimizer" status="done" delay={200} />
+            <SubagentStep icon={Icons.code} text="Analyzing ROAS trends and budget burn rates" model="Optimizer" status="done" delay={300} />
+            <SubagentStep icon={Icons.chart} text="Building real-time performance dashboard" model="Collector" status="done" delay={400} />
+          </div>
+
+          {/* Campaigns */}
+          <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
+            <h3 className="text-lg font-semibold mb-3">Active Campaigns</h3>
+            {campaigns.filter(c => selectedPlatform === 'all' || c.platform === selectedPlatform).length === 0 ? (
+              <p className="text-sm text-ppl-sub">No campaigns synced yet.</p>
+            ) : (
+              campaigns
+                .filter(c => selectedPlatform === 'all' || c.platform === selectedPlatform)
+                .map(c => <CampaignRow key={c.id} campaign={c} onStatusChange={handleStatusChange} />)
+            )}
+          </div>
+
+          {/* Content Studio */}
+          <ContentStudioPanel />
+
+          {/* Alerts */}
+          {alerts.length > 0 && (
+            <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
+              <div className="flex items-center gap-2 mb-3">
+                {Icons.bell}
+                <h3 className="text-lg font-semibold">Alerts</h3>
+                <span className="ml-auto text-xs bg-red-50 text-red-600 px-2 py-0.5 rounded-full font-medium">{alerts.length}</span>
+              </div>
+              {alerts.map(a => <AlertItem key={a.id} alert={a} />)}
+            </div>
+          )}
+
+          {/* File outputs (Perplexity attachment style) */}
+          <div className="flex gap-3 flex-wrap">
+            <FileCard name="performance_report.xlsx" size="Weekly export" icon={Icons.chart} />
+            <FileCard name="budget_optimization.json" size="Reallocation plan" icon={Icons.gear} />
+          </div>
+
+          {/* Scheduled tasks (Perplexity style) */}
+          <div className="bg-white rounded-2xl border border-ppl-border px-5 py-4 shadow-sm inline-block">
+            <div className="flex items-center gap-2 text-ppl-sub mb-1">
+              {Icons.clock}
+              <span className="text-sm font-medium">Scheduled tasks</span>
+            </div>
+            <p className="text-sm text-ppl-sub ml-6">Data collection every 15 minutes</p>
+            <p className="text-sm text-ppl-sub ml-6">Alert check on each collection cycle</p>
+          </div>
+        </div>
+      );
+
+      // ─── Main Render ────────────────────────────────
+      return (
+        <div className="h-screen flex bg-ppl-bg">
+          <Sidebar />
+
+          {/* Main Content Area */}
+          <div className="flex-1 flex flex-col min-w-0">
+            {/* Top Bar */}
+            <div className="h-14 border-b border-ppl-border bg-white flex items-center px-4 gap-3 shrink-0">
+              <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-1.5 rounded-lg hover:bg-ppl-hover text-ppl-sub transition-colors">
+                {Icons.sidebar}
+              </button>
+
+              {/* Platform Selector */}
+              <div className="flex items-center gap-1 bg-ppl-bg rounded-xl p-1 border border-ppl-border">
+                {[
+                  { id: 'all', label: 'All' },
+                  { id: 'meta', label: 'Meta' },
+                  { id: 'google', label: 'Google' },
+                ].map(p => (
+                  <button
+                    key={p.id}
+                    onClick={() => setSelectedPlatform(p.id)}
+                    className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                      selectedPlatform === p.id
+                        ? p.id === 'meta' ? 'bg-blue-500 text-white'
+                          : p.id === 'google' ? 'bg-amber-500 text-white'
+                          : 'bg-ppl-teal text-white'
+                        : 'text-ppl-sub hover:text-ppl-text'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex-1" />
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-500' : 'bg-red-400'}`}></span>
+                <span className="text-xs text-ppl-sub">{connected ? 'Live' : 'Disconnected'}</span>
+              </div>
+              <span className="text-xs text-ppl-sub border border-ppl-border rounded-lg px-2.5 py-1">Ad Automation v1.0</span>
+            </div>
+
+            {/* Chat / Content Scroll */}
+            <div className="flex-1 overflow-y-auto scrollbar-thin">
+              {activeView === 'overview' ? (
+                <div className="px-8 py-8">
+                  <OverviewPanel />
+                </div>
+              ) : (
+                <div className="max-w-4xl mx-auto px-6 py-8">
+                  <ChatMessage role="agent">
+                    <DashboardPanel />
+                  </ChatMessage>
+
+                  {chatHistory.map((msg, i) => (
+                    <ChatMessage key={i} role={msg.role}>
+                      {msg.role === 'user' ? (
+                        <p className="text-base leading-relaxed">{msg.text}</p>
+                      ) : (
+                        <p className="text-base leading-relaxed text-ppl-sub">Processing: "{msg.text}"</p>
+                      )}
+                    </ChatMessage>
+                  ))}
+
+                  <div ref={chatEndRef} />
+                </div>
+              )}
+            </div>
+
+            {/* Input Bar (Perplexity style) */}
+            <div className="shrink-0 border-t border-ppl-border bg-white px-6 py-4">
+              <div className="max-w-3xl mx-auto">
+                <div className="flex items-center gap-2 bg-ppl-bg rounded-2xl border border-ppl-border px-4 py-3 focus-within:border-ppl-teal focus-within:shadow-sm transition-all">
+                  <button className="p-1 text-ppl-sub hover:text-ppl-text transition-colors">{Icons.plus}</button>
+                  <input
+                    type="text"
+                    value={inputValue}
+                    onChange={e => setInputValue(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleSend()}
+                    placeholder="Ask about your ad performance..."
+                    className="flex-1 bg-transparent text-sm placeholder:text-gray-400 focus:outline-none"
+                  />
+                  <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-ppl-border text-xs text-ppl-sub cursor-pointer hover:bg-ppl-hover transition-colors">
+                    {Icons.chart} Computer
+                  </span>
+                  <button
+                    onClick={handleSend}
+                    disabled={!inputValue.trim()}
+                    className={`p-2 rounded-xl transition-colors ${inputValue.trim() ? 'bg-ppl-teal text-white hover:bg-teal-600' : 'bg-gray-100 text-gray-300'}`}
+                  >
+                    {Icons.send}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<ErrorBoundary><App /></ErrorBoundary>);
+  </script>
+</body>
+</html>

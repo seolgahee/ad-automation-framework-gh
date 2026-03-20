@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ad Automation — Screen Design Document</title>
+  <script src="https://cdn.tailwindcss.com/3.4.1"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: #F8FAFC; }
+    .wireframe-box { border: 2px dashed #94A3B8; background: rgba(148,163,184,0.06); border-radius: 12px; }
+    .solid-box { border: 1.5px solid #CBD5E1; background: white; border-radius: 12px; }
+    .accent-box { border: 2px solid #14B8A6; background: rgba(20,184,166,0.04); border-radius: 12px; }
+    .label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #64748B; }
+    .section-title { font-size: 22px; font-weight: 800; color: #0F172A; letter-spacing: -0.02em; }
+    .arrow-down { width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-top: 12px solid #14B8A6; margin: 0 auto; }
+    .flow-line { height: 2px; background: linear-gradient(90deg, #14B8A6, #3B82F6); }
+    .component-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600; }
+    .mock-chart { background: linear-gradient(180deg, rgba(59,130,246,0.08) 0%, rgba(59,130,246,0) 100%); border-radius: 8px; position: relative; overflow: hidden; }
+    .mock-chart::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 60%; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 120'%3E%3Cpath d='M0,80 C50,60 100,90 150,50 C200,10 250,70 300,40 C350,10 400,60 400,30 L400,120 L0,120 Z' fill='rgba(59,130,246,0.1)' stroke='%233B82F6' stroke-width='2'/%3E%3C/svg%3E") no-repeat center bottom; background-size: 100% 100%; }
+    .teal-line::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 60%; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 120'%3E%3Cpath d='M0,70 C80,40 120,80 200,50 C280,20 320,60 400,35' fill='none' stroke='%2314B8A6' stroke-width='2.5'/%3E%3Ccircle cx='0' cy='70' r='3' fill='%2314B8A6'/%3E%3Ccircle cx='200' cy='50' r='3' fill='%2314B8A6'/%3E%3Ccircle cx='400' cy='35' r='3' fill='%2314B8A6'/%3E%3C/svg%3E") no-repeat center bottom; background-size: 100% 100%; }
+  </style>
+</head>
+<body class="p-8">
+
+  <!-- ============ HEADER ============ -->
+  <div class="max-w-7xl mx-auto mb-12">
+    <div class="flex items-center gap-3 mb-2">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-teal-500 to-teal-600 flex items-center justify-center shadow-md">
+        <span class="text-white text-lg font-extrabold">A</span>
+      </div>
+      <div>
+        <h1 class="text-3xl font-extrabold text-slate-900 tracking-tight">Ad Automation Framework</h1>
+        <p class="text-sm text-slate-500">Screen Design Document — Perplexity-style Dashboard</p>
+      </div>
+    </div>
+    <div class="mt-4 flex gap-3">
+      <span class="component-tag bg-teal-50 text-teal-700">React 18</span>
+      <span class="component-tag bg-blue-50 text-blue-700">Tailwind CSS</span>
+      <span class="component-tag bg-purple-50 text-purple-700">Recharts</span>
+      <span class="component-tag bg-amber-50 text-amber-700">WebSocket</span>
+      <span class="component-tag bg-slate-100 text-slate-700">Single-file SPA</span>
+    </div>
+  </div>
+
+  <!-- ============ 1. FULL LAYOUT WIREFRAME ============ -->
+  <div class="max-w-7xl mx-auto mb-16">
+    <div class="mb-6">
+      <p class="label mb-1">Section 1</p>
+      <h2 class="section-title">전체 레이아웃 구조</h2>
+      <p class="text-sm text-slate-500 mt-1">Flexbox 기반 3-Column 구조 (Sidebar + Main + Input Bar)</p>
+    </div>
+
+    <!-- Full wireframe -->
+    <div class="wireframe-box p-4 flex gap-3" style="height: 560px;">
+      <!-- Sidebar -->
+      <div class="solid-box flex flex-col" style="width: 240px;">
+        <div class="p-3 border-b border-slate-200">
+          <div class="flex items-center gap-2 mb-3">
+            <div class="w-6 h-6 rounded-md bg-teal-500 flex items-center justify-center">
+              <span class="text-white text-[10px] font-bold">A</span>
+            </div>
+            <span class="text-xs font-semibold text-slate-700">Ad Automation</span>
+          </div>
+          <div class="bg-slate-50 rounded-lg px-3 py-1.5 text-[10px] text-slate-400 flex items-center gap-1.5">
+            <svg width="10" height="10" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            New Thread
+          </div>
+        </div>
+
+        <div class="flex-1 p-3 text-[10px] space-y-1 overflow-hidden">
+          <p class="font-semibold text-slate-400 uppercase text-[8px] tracking-wider mb-1">Recent</p>
+          <div class="px-2 py-1 rounded text-slate-500 bg-slate-50">Meta ROAS 분석</div>
+          <div class="px-2 py-1 rounded text-slate-400">Google 예산 최적화</div>
+          <div class="px-2 py-1 rounded text-slate-400">주간 성과 리포트</div>
+          <div class="px-2 py-1 rounded text-slate-400">봄 프로모션 세팅</div>
+
+          <p class="font-semibold text-slate-400 uppercase text-[8px] tracking-wider mt-4 mb-1">Content</p>
+          <div class="px-2 py-1 rounded text-slate-400 flex items-center gap-1">
+            <span class="w-2 h-2 rounded bg-teal-200"></span> Creatives
+          </div>
+          <div class="px-2 py-1 rounded text-slate-400 flex items-center gap-1">
+            <span class="w-2 h-2 rounded bg-blue-200"></span> Templates
+          </div>
+          <div class="px-2 py-1 rounded text-slate-400 flex items-center gap-1">
+            <span class="w-2 h-2 rounded bg-purple-200"></span> A/B Tests
+          </div>
+          <div class="px-2 py-1 rounded text-slate-400 flex items-center gap-1">
+            <span class="w-2 h-2 rounded bg-amber-200"></span> Audiences
+          </div>
+
+          <p class="font-semibold text-slate-400 uppercase text-[8px] tracking-wider mt-4 mb-1">Scheduled</p>
+          <div class="px-2 py-1 rounded text-slate-400">15분 주기 데이터 수집</div>
+        </div>
+
+        <div class="p-3 border-t border-slate-200">
+          <div class="flex items-center gap-1.5">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+            <span class="text-[10px] text-slate-400">Connected</span>
+          </div>
+        </div>
+
+        <!-- Label -->
+        <div class="absolute -right-1 top-1/2 -translate-y-1/2"></div>
+      </div>
+
+      <!-- Main Area -->
+      <div class="flex-1 flex flex-col solid-box overflow-hidden">
+        <!-- Top Bar -->
+        <div class="h-10 border-b border-slate-200 flex items-center px-3 gap-2 shrink-0 bg-white rounded-t-xl">
+          <div class="w-5 h-5 rounded border border-slate-200 flex items-center justify-center">
+            <svg width="10" height="10" fill="none" stroke="#94A3B8" strokeWidth="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+          </div>
+          <div class="flex-1"></div>
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+          <span class="text-[9px] text-slate-400">Live</span>
+          <span class="text-[9px] text-slate-400 border border-slate-200 rounded px-1.5 py-0.5 ml-2">Ad Automation v1.0</span>
+        </div>
+
+        <!-- Scrollable Content -->
+        <div class="flex-1 overflow-hidden p-4 space-y-3">
+          <!-- User Message Bubble -->
+          <div class="max-w-md mx-auto">
+            <div class="solid-box px-3 py-2 shadow-sm">
+              <p class="text-[10px] text-slate-600 leading-relaxed">Meta & Google Ads의 <strong>오늘 성과를 분석</strong>하고, ROAS가 낮은 캠페인은 <strong>예산 조정 추천</strong>해줘.</p>
+              <div class="flex items-center gap-1 mt-1.5 pt-1.5 border-t border-slate-100">
+                <span class="text-[8px] text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">Computer</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Agent Response Area -->
+          <div class="max-w-lg mx-auto space-y-2">
+            <!-- Subagent Steps -->
+            <div class="border-b border-slate-100 pb-2">
+              <p class="text-[8px] font-semibold text-slate-400 uppercase mb-1">Running Subagents</p>
+              <div class="space-y-0.5 text-[9px] text-slate-500">
+                <div class="flex items-center gap-1"><span class="text-emerald-500">✓</span> Fetching Meta campaign insights <span class="component-tag bg-blue-50 text-blue-600" style="font-size:8px">Meta API</span></div>
+                <div class="flex items-center gap-1"><span class="text-emerald-500">✓</span> Fetching Google Ads metrics <span class="component-tag bg-amber-50 text-amber-600" style="font-size:8px">Google API</span></div>
+                <div class="flex items-center gap-1"><span class="text-emerald-500">✓</span> Computing KPIs <span class="component-tag bg-purple-50 text-purple-600" style="font-size:8px">Optimizer</span></div>
+              </div>
+            </div>
+
+            <!-- Mini KPI preview -->
+            <div class="grid grid-cols-5 gap-1.5">
+              <div class="rounded-lg p-1.5 bg-blue-50"><p class="text-[7px] text-slate-400">Spend</p><p class="text-[10px] font-bold text-blue-600">₩2.4M</p></div>
+              <div class="rounded-lg p-1.5 bg-emerald-50"><p class="text-[7px] text-slate-400">Conv.</p><p class="text-[10px] font-bold text-emerald-600">1,284</p></div>
+              <div class="rounded-lg p-1.5 bg-emerald-50"><p class="text-[7px] text-slate-400">ROAS</p><p class="text-[10px] font-bold text-emerald-600">3.42</p></div>
+              <div class="rounded-lg p-1.5 bg-purple-50"><p class="text-[7px] text-slate-400">CPA</p><p class="text-[10px] font-bold text-purple-600">₩1,870</p></div>
+              <div class="rounded-lg p-1.5 bg-teal-50"><p class="text-[7px] text-slate-400">CTR</p><p class="text-[10px] font-bold text-teal-600">2.31%</p></div>
+            </div>
+
+            <!-- Mini Chart preview -->
+            <div class="grid grid-cols-2 gap-1.5">
+              <div class="mock-chart h-14 rounded-lg"></div>
+              <div class="mock-chart teal-line h-14 rounded-lg"></div>
+            </div>
+
+            <!-- Mini Campaign list -->
+            <div class="text-[8px] text-slate-500 space-y-0.5">
+              <div class="flex items-center gap-1 py-0.5"><span class="component-tag bg-blue-50 text-blue-600" style="font-size:7px;padding:1px 4px">Meta</span> 봄 프로모션 캠페인 <span class="ml-auto">₩450K</span></div>
+              <div class="flex items-center gap-1 py-0.5"><span class="component-tag bg-amber-50 text-amber-600" style="font-size:7px;padding:1px 4px">Google</span> 브랜드 검색광고 <span class="ml-auto">₩320K</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Input Bar -->
+        <div class="shrink-0 border-t border-slate-200 p-3 bg-white rounded-b-xl">
+          <div class="max-w-md mx-auto flex items-center gap-2 bg-slate-50 rounded-xl border border-slate-200 px-3 py-2">
+            <svg width="10" height="10" fill="none" stroke="#94A3B8" strokeWidth="2" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <span class="flex-1 text-[10px] text-slate-300">Ask about your ad performance...</span>
+            <span class="text-[8px] text-slate-400 border border-slate-200 rounded px-1.5 py-0.5 bg-white">Computer</span>
+            <div class="w-5 h-5 rounded-md bg-slate-200 flex items-center justify-center">
+              <svg width="8" height="8" fill="none" stroke="#94A3B8" strokeWidth="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Layout annotations -->
+    <div class="mt-4 grid grid-cols-3 gap-4 text-xs text-slate-500">
+      <div class="p-3 bg-slate-50 rounded-lg">
+        <p class="font-semibold text-slate-700 mb-1">Sidebar (w-64, 256px)</p>
+        <p>Recent 대화 히스토리, Content Studio 바로가기 (Creatives / Templates / A/B Tests / Audiences), 예약 작업, WebSocket 연결 상태</p>
+      </div>
+      <div class="p-3 bg-slate-50 rounded-lg">
+        <p class="font-semibold text-slate-700 mb-1">Main Content (flex-1)</p>
+        <p>Top Bar (연결상태, 버전) → 스크롤 영역 (Chat 메시지 + Dashboard 패널 인라인) → 하단 고정 Input Bar</p>
+      </div>
+      <div class="p-3 bg-slate-50 rounded-lg">
+        <p class="font-semibold text-slate-700 mb-1">Input Bar (하단 고정)</p>
+        <p>Perplexity 스타일 검색창. + 버튼, 텍스트 입력, "Computer" 모드 배지, Send 버튼. Enter 키로 전송</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 2. COMPONENT BREAKDOWN ============ -->
+  <div class="max-w-7xl mx-auto mb-16">
+    <div class="mb-6">
+      <p class="label mb-1">Section 2</p>
+      <h2 class="section-title">컴포넌트 구조도</h2>
+      <p class="text-sm text-slate-500 mt-1">React 컴포넌트 트리 & 데이터 흐름</p>
+    </div>
+
+    <div class="solid-box p-6">
+      <!-- Root -->
+      <div class="text-center mb-6">
+        <span class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-teal-500 to-teal-600 text-white font-semibold text-sm shadow-md">
+          &lt;App /&gt;
+        </span>
+        <p class="text-[10px] text-slate-400 mt-1">State: overview, campaigns, timeline, alerts, chatHistory, days, connected</p>
+      </div>
+
+      <div class="arrow-down mb-4"></div>
+
+      <!-- Level 1 -->
+      <div class="grid grid-cols-3 gap-4 mb-6">
+        <!-- Sidebar -->
+        <div class="accent-box p-4">
+          <p class="text-sm font-bold text-teal-700 mb-2">&lt;Sidebar /&gt;</p>
+          <div class="space-y-1.5 text-[10px] text-slate-500">
+            <div class="bg-slate-50 rounded px-2 py-1">로고 + "New Thread" 버튼</div>
+            <div class="bg-slate-50 rounded px-2 py-1"><strong>Recent</strong> — 대화 히스토리 4개</div>
+            <div class="bg-slate-50 rounded px-2 py-1"><strong>Content</strong> — Creatives / Templates / A/B Tests / Audiences</div>
+            <div class="bg-slate-50 rounded px-2 py-1"><strong>Scheduled</strong> — 15분 주기 수집</div>
+            <div class="bg-slate-50 rounded px-2 py-1"><strong>Footer</strong> — WebSocket 연결 상태</div>
+          </div>
+        </div>
+
+        <!-- DashboardPanel -->
+        <div class="accent-box p-4">
+          <p class="text-sm font-bold text-teal-700 mb-2">&lt;DashboardPanel /&gt;</p>
+          <div class="space-y-1.5 text-[10px] text-slate-500">
+            <div class="bg-slate-50 rounded px-2 py-1">&lt;SubagentStep /&gt; × 5</div>
+            <div class="bg-blue-50 rounded px-2 py-1"><strong>KPI Grid</strong> — 5-col (Spend, Conv, ROAS, CPA, CTR)</div>
+            <div class="bg-blue-50 rounded px-2 py-1"><strong>Charts</strong> — AreaChart (Spend) + LineChart (ROAS)</div>
+            <div class="bg-slate-50 rounded px-2 py-1">&lt;CampaignRow /&gt; × N</div>
+            <div class="bg-purple-50 rounded px-2 py-1">&lt;ContentStudioPanel /&gt;</div>
+            <div class="bg-red-50 rounded px-2 py-1">&lt;AlertItem /&gt; × N</div>
+            <div class="bg-slate-50 rounded px-2 py-1">&lt;FileCard /&gt; × 2</div>
+          </div>
+        </div>
+
+        <!-- ChatMessage -->
+        <div class="accent-box p-4">
+          <p class="text-sm font-bold text-teal-700 mb-2">&lt;ChatMessage /&gt;</p>
+          <div class="space-y-1.5 text-[10px] text-slate-500">
+            <div class="bg-slate-50 rounded px-2 py-1"><strong>role="user"</strong> — 흰색 카드, 2xl 라운드, 그림자</div>
+            <div class="bg-slate-50 rounded px-2 py-1"><strong>role="agent"</strong> — 풀 폭, 배경 투명</div>
+            <div class="bg-amber-50 rounded px-2 py-1"><strong>Input Bar</strong> — 하단 고정, Enter 전송</div>
+            <div class="bg-emerald-50 rounded px-2 py-1"><strong>handleSend()</strong> → POST /api/chat</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Level 2: Sub-components -->
+      <div class="grid grid-cols-5 gap-3">
+        <div class="solid-box p-3 text-center">
+          <p class="text-[10px] font-bold text-slate-700">SubagentStep</p>
+          <p class="text-[9px] text-slate-400 mt-1">아이콘 + 텍스트 + ModelBadge + 상태(done/running)</p>
+        </div>
+        <div class="solid-box p-3 text-center">
+          <p class="text-[10px] font-bold text-slate-700">KPIRow</p>
+          <p class="text-[9px] text-slate-400 mt-1">라벨 + 값 + 변화율 배지 (녹/적)</p>
+        </div>
+        <div class="solid-box p-3 text-center">
+          <p class="text-[10px] font-bold text-slate-700">CampaignRow</p>
+          <p class="text-[9px] text-slate-400 mt-1">플랫폼 배지 + 이름 + ROAS/CPA + 예산 + 일시정지 버튼</p>
+        </div>
+        <div class="solid-box p-3 text-center">
+          <p class="text-[10px] font-bold text-slate-700">AlertItem</p>
+          <p class="text-[9px] text-slate-400 mt-1">심각도 색상 좌측 보더 + 메시지 + 시간</p>
+        </div>
+        <div class="solid-box p-3 text-center">
+          <p class="text-[10px] font-bold text-slate-700">ModelBadge</p>
+          <p class="text-[9px] text-slate-400 mt-1">Meta/Google/Optimizer 등 컬러 코딩 배지</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 3. DASHBOARD PANEL DETAIL ============ -->
+  <div class="max-w-7xl mx-auto mb-16">
+    <div class="mb-6">
+      <p class="label mb-1">Section 3</p>
+      <h2 class="section-title">Dashboard Panel 상세 설계</h2>
+      <p class="text-sm text-slate-500 mt-1">에이전트 응답 영역 내 인라인 대시보드 — 6개 섹션</p>
+    </div>
+
+    <div class="space-y-4">
+      <!-- 3-1: Subagent Steps -->
+      <div class="solid-box p-5">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="component-tag bg-slate-100 text-slate-700">3-1</span>
+          <p class="text-sm font-bold text-slate-700">Running Subagents</p>
+          <span class="text-[10px] text-slate-400 ml-2">Perplexity "서브에이전트 실행" 패턴</span>
+        </div>
+        <div class="bg-slate-50 rounded-lg p-4 space-y-2">
+          <div class="flex items-center gap-3 text-sm">
+            <span class="text-slate-400">🌐</span>
+            <span class="text-slate-600">Fetching Meta campaign insights and today's spend data</span>
+            <span class="component-tag bg-blue-50 text-blue-600">Meta API</span>
+            <span class="text-emerald-500 ml-auto">✓</span>
+          </div>
+          <div class="flex items-center gap-3 text-sm">
+            <span class="text-slate-400">🌐</span>
+            <span class="text-slate-600">Fetching Google Ads performance metrics via GAQL</span>
+            <span class="component-tag bg-amber-50 text-amber-600">Google API</span>
+            <span class="text-emerald-500 ml-auto">✓</span>
+          </div>
+          <div class="flex items-center gap-3 text-sm">
+            <span class="text-slate-400">⚙️</span>
+            <span class="text-slate-600">Normalizing cross-platform data and computing KPIs</span>
+            <span class="component-tag bg-purple-50 text-purple-600">Optimizer</span>
+            <span class="text-emerald-500 ml-auto">✓</span>
+          </div>
+          <div class="flex items-center gap-3 text-sm">
+            <span class="text-slate-400">💻</span>
+            <span class="text-slate-600 typing-cursor-demo">Analyzing ROAS trends and budget burn rates</span>
+            <span class="component-tag bg-purple-50 text-purple-600">Optimizer</span>
+            <span class="w-2 h-2 rounded-full bg-teal-500 ml-auto animate-pulse"></span>
+          </div>
+          <div class="flex items-center gap-3 text-sm">
+            <span class="text-slate-400">📊</span>
+            <span class="text-slate-600">Building real-time performance dashboard</span>
+            <span class="component-tag bg-rose-50 text-rose-600">Collector</span>
+            <span class="text-emerald-500 ml-auto">✓</span>
+          </div>
+        </div>
+        <p class="text-[10px] text-slate-400 mt-2">* fadeInUp 애니메이션(0.4s)으로 순차 표시, running 상태에서 typing-cursor 깜빡임</p>
+      </div>
+
+      <!-- 3-2: KPI Grid -->
+      <div class="solid-box p-5">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="component-tag bg-slate-100 text-slate-700">3-2</span>
+          <p class="text-sm font-bold text-slate-700">Performance Overview (KPI Grid)</p>
+          <span class="text-[10px] text-slate-400 ml-2">grid-cols-5, 기간 필터 (1/7/14/30일)</span>
+        </div>
+        <div class="grid grid-cols-5 gap-3">
+          <div class="rounded-xl p-4 bg-blue-50">
+            <p class="text-xs text-slate-500 mb-1">Total Spend</p>
+            <p class="text-xl font-bold text-blue-600">₩2,430,000</p>
+          </div>
+          <div class="rounded-xl p-4 bg-emerald-50">
+            <p class="text-xs text-slate-500 mb-1">Conversions</p>
+            <p class="text-xl font-bold text-emerald-600">1,284</p>
+          </div>
+          <div class="rounded-xl p-4 bg-emerald-50">
+            <p class="text-xs text-slate-500 mb-1">ROAS</p>
+            <p class="text-xl font-bold text-emerald-600">3.42</p>
+            <p class="text-[10px] text-slate-400">≥ 1.5 → emerald / &lt; 1.5 → red</p>
+          </div>
+          <div class="rounded-xl p-4 bg-purple-50">
+            <p class="text-xs text-slate-500 mb-1">CPA</p>
+            <p class="text-xl font-bold text-purple-600">₩1,892</p>
+          </div>
+          <div class="rounded-xl p-4 bg-teal-50">
+            <p class="text-xs text-slate-500 mb-1">CTR</p>
+            <p class="text-xl font-bold text-teal-600">2.31%</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3-3: Charts -->
+      <div class="solid-box p-5">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="component-tag bg-slate-100 text-slate-700">3-3</span>
+          <p class="text-sm font-bold text-slate-700">Charts (grid-cols-2)</p>
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <p class="text-sm font-medium text-slate-500 mb-2">Spend & Conversions — AreaChart</p>
+            <div class="mock-chart h-40 rounded-xl border border-slate-100 p-3">
+              <div class="flex justify-between text-[9px] text-slate-400 mb-1">
+                <span>3/10</span><span>3/11</span><span>3/12</span><span>3/13</span><span>3/14</span><span>3/15</span><span>3/16</span>
+              </div>
+            </div>
+            <p class="text-[10px] text-slate-400 mt-1">Recharts AreaChart, 파란색 그라디언트 채우기, Custom Tooltip</p>
+          </div>
+          <div>
+            <p class="text-sm font-medium text-slate-500 mb-2">ROAS Trend — LineChart</p>
+            <div class="mock-chart teal-line h-40 rounded-xl border border-slate-100 p-3">
+              <div class="flex justify-between text-[9px] text-slate-400 mb-1">
+                <span>3/10</span><span>3/11</span><span>3/12</span><span>3/13</span><span>3/14</span><span>3/15</span><span>3/16</span>
+              </div>
+            </div>
+            <p class="text-[10px] text-slate-400 mt-1">Recharts LineChart, 틸(#14B8A6) 라인, 점 마커 r=3</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3-4: Campaigns -->
+      <div class="solid-box p-5">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="component-tag bg-slate-100 text-slate-700">3-4</span>
+          <p class="text-sm font-bold text-slate-700">Active Campaigns</p>
+        </div>
+        <div class="space-y-1">
+          <div class="flex items-center gap-3 py-2.5 px-3 rounded-lg hover:bg-slate-50 border-b border-slate-100">
+            <span class="component-tag bg-blue-50 text-blue-700">Meta</span>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium">봄 프로모션 캠페인</p>
+              <p class="text-xs text-slate-400">ROAS 3.42 · CPA ₩1,580</p>
+            </div>
+            <div class="text-right">
+              <p class="text-sm font-medium">₩450,000</p>
+              <p class="text-xs text-slate-400">/ ₩500,000</p>
+            </div>
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+            <button class="p-1.5 rounded-lg hover:bg-gray-100 text-slate-400">⏸</button>
+          </div>
+          <div class="flex items-center gap-3 py-2.5 px-3 rounded-lg hover:bg-slate-50 border-b border-slate-100">
+            <span class="component-tag bg-amber-50 text-amber-700">Google</span>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium">브랜드 검색 광고</p>
+              <p class="text-xs text-slate-400">ROAS 5.12 · CPA ₩980</p>
+            </div>
+            <div class="text-right">
+              <p class="text-sm font-medium">₩320,000</p>
+              <p class="text-xs text-slate-400">/ ₩400,000</p>
+            </div>
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+            <button class="p-1.5 rounded-lg hover:bg-gray-100 text-slate-400">⏸</button>
+          </div>
+          <div class="flex items-center gap-3 py-2.5 px-3 rounded-lg hover:bg-slate-50">
+            <span class="component-tag bg-amber-50 text-amber-700">Google</span>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium">디스플레이 리마케팅</p>
+              <p class="text-xs text-slate-400">ROAS 1.23 · CPA ₩4,200</p>
+            </div>
+            <div class="text-right">
+              <p class="text-sm font-medium">₩180,000</p>
+              <p class="text-xs text-slate-400">/ ₩200,000</p>
+            </div>
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+            <button class="p-1.5 rounded-lg hover:bg-gray-100 text-slate-400">▶</button>
+          </div>
+        </div>
+        <p class="text-[10px] text-slate-400 mt-2">* 플랫폼 배지 (Meta=파랑, Google=앰버), 상태 dot (ACTIVE=초록, PAUSED=앰버), 일시정지/재개 토글</p>
+      </div>
+
+      <!-- 3-5: Content Studio -->
+      <div class="solid-box p-5">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="component-tag bg-slate-100 text-slate-700">3-5</span>
+          <p class="text-sm font-bold text-slate-700">Content Studio (4-Tab 구조)</p>
+        </div>
+
+        <!-- Tab Bar -->
+        <div class="flex gap-1 mb-4">
+          <span class="px-3 py-1.5 rounded-lg text-xs font-medium bg-teal-500 text-white">Creatives</span>
+          <span class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-500">Templates</span>
+          <span class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-500">A/B Tests</span>
+          <span class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-500">Audiences</span>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <!-- Creatives Tab -->
+          <div class="border border-slate-200 rounded-xl p-4">
+            <p class="text-xs font-bold text-slate-700 mb-2">Creatives Tab</p>
+            <div class="space-y-1.5 text-[10px] text-slate-500">
+              <div class="flex items-center gap-2 py-1">
+                <span class="component-tag bg-blue-50 text-blue-600" style="font-size:8px">Meta</span>
+                <span class="flex-1">봄 시즌 프로모션 배너</span>
+                <span class="component-tag bg-purple-50 text-purple-600" style="font-size:8px">Group A</span>
+                <span class="component-tag bg-emerald-50 text-emerald-600" style="font-size:8px">ACTIVE</span>
+              </div>
+              <div class="flex items-center gap-2 py-1">
+                <span class="component-tag bg-amber-50 text-amber-600" style="font-size:8px">Google</span>
+                <span class="flex-1">반응형 검색광고 v2</span>
+                <span class="component-tag bg-blue-50 text-blue-600" style="font-size:8px">UPLOADED</span>
+              </div>
+              <div class="flex items-center gap-2 py-1">
+                <span class="component-tag bg-blue-50 text-blue-600" style="font-size:8px">Meta</span>
+                <span class="flex-1">할인 이벤트 카피</span>
+                <span class="component-tag bg-gray-100 text-gray-600" style="font-size:8px">DRAFT</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Templates Tab -->
+          <div class="border border-slate-200 rounded-xl p-4">
+            <p class="text-xs font-bold text-slate-700 mb-2">Templates Tab (grid-cols-2)</p>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="border border-slate-200 rounded-lg p-2">
+                <div class="flex items-center gap-1 mb-1">
+                  <span class="component-tag bg-blue-50 text-blue-600" style="font-size:7px">Meta</span>
+                  <span class="text-[8px] text-slate-400">Built-in</span>
+                </div>
+                <p class="text-[10px] font-medium">프로모션 기본</p>
+                <p class="text-[8px] text-slate-400">{{brand}} 특별 할인...</p>
+                <div class="flex gap-1 mt-1">
+                  <span class="text-[7px] bg-slate-50 px-1 rounded">{{brand}}</span>
+                  <span class="text-[7px] bg-slate-50 px-1 rounded">{{discount}}</span>
+                </div>
+              </div>
+              <div class="border border-slate-200 rounded-lg p-2">
+                <div class="flex items-center gap-1 mb-1">
+                  <span class="component-tag bg-amber-50 text-amber-600" style="font-size:7px">Google</span>
+                  <span class="text-[8px] text-emerald-600">Custom</span>
+                </div>
+                <p class="text-[10px] font-medium">검색광고 RSA</p>
+                <p class="text-[8px] text-slate-400">{{keyword}} 검색하세요</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- A/B Tests Tab -->
+          <div class="border border-slate-200 rounded-xl p-4">
+            <p class="text-xs font-bold text-slate-700 mb-2">A/B Tests Tab</p>
+            <div class="border border-slate-200 rounded-lg p-3">
+              <div class="flex items-center justify-between mb-2">
+                <div>
+                  <p class="text-[10px] font-medium">봄 프로모션 A/B</p>
+                  <p class="text-[8px] text-slate-400">meta · 3 variants · Min 1000 imp</p>
+                </div>
+                <span class="component-tag bg-blue-50 text-blue-600" style="font-size:8px">RUNNING</span>
+              </div>
+              <div class="space-y-1">
+                <div class="flex items-center gap-2">
+                  <span class="text-[8px] w-12">Variant A</span>
+                  <div class="flex-1 bg-slate-100 rounded-full h-1.5"><div class="h-full rounded-full bg-teal-500" style="width:75%"></div></div>
+                  <span class="text-[8px] text-emerald-600 font-medium">Winner</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="text-[8px] w-12">Variant B</span>
+                  <div class="flex-1 bg-slate-100 rounded-full h-1.5"><div class="h-full rounded-full bg-teal-500 opacity-40" style="width:50%"></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Audiences Tab -->
+          <div class="border border-slate-200 rounded-xl p-4">
+            <p class="text-xs font-bold text-slate-700 mb-2">Audiences Tab</p>
+            <div class="text-center py-3">
+              <p class="text-[10px] text-slate-500">No audiences created yet</p>
+              <p class="text-[8px] text-slate-400 mt-1">Available Targeting Presets:</p>
+              <div class="flex flex-wrap gap-1 justify-center mt-2">
+                <span class="text-[8px] bg-purple-50 text-purple-600 px-2 py-0.5 rounded-lg">KR 18-44 Broad</span>
+                <span class="text-[8px] bg-purple-50 text-purple-600 px-2 py-0.5 rounded-lg">KR 18-34 Female</span>
+                <span class="text-[8px] bg-purple-50 text-purple-600 px-2 py-0.5 rounded-lg">Seoul Metro</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3-6: Alerts -->
+      <div class="solid-box p-5">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="component-tag bg-slate-100 text-slate-700">3-6</span>
+          <p class="text-sm font-bold text-slate-700">Alerts</p>
+          <span class="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded-full font-medium ml-2">3</span>
+        </div>
+        <div class="space-y-2">
+          <div class="px-4 py-3 rounded-lg bg-red-50/50 border-l-[3px] border-l-red-500">
+            <p class="text-sm">디스플레이 리마케팅 ROAS 1.23 — 임계값(1.5) 미달</p>
+            <p class="text-xs text-slate-400 mt-1 flex items-center gap-1">🕐 2026-03-17 09:15</p>
+          </div>
+          <div class="px-4 py-3 rounded-lg bg-amber-50/50 border-l-[3px] border-l-amber-500">
+            <p class="text-sm">봄 프로모션 예산 소진율 87% — 임계값(85%) 초과</p>
+            <p class="text-xs text-slate-400 mt-1 flex items-center gap-1">🕐 2026-03-17 08:45</p>
+          </div>
+          <div class="px-4 py-3 rounded-lg bg-blue-50/50 border-l-[3px] border-l-blue-500">
+            <p class="text-sm">주간 성과 리포트 생성 완료</p>
+            <p class="text-xs text-slate-400 mt-1 flex items-center gap-1">🕐 2026-03-17 08:00</p>
+          </div>
+        </div>
+        <p class="text-[10px] text-slate-400 mt-2">* 심각도별 색상: critical=빨강, warning=앰버, info=파랑 (좌측 3px 보더)</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 4. DATA FLOW ============ -->
+  <div class="max-w-7xl mx-auto mb-16">
+    <div class="mb-6">
+      <p class="label mb-1">Section 4</p>
+      <h2 class="section-title">데이터 흐름 & 실시간 업데이트</h2>
+    </div>
+
+    <div class="solid-box p-6">
+      <div class="grid grid-cols-4 gap-4 text-center text-xs">
+        <!-- Step 1 -->
+        <div class="bg-blue-50 rounded-xl p-4">
+          <p class="font-bold text-blue-700 mb-2">1. 초기 로딩</p>
+          <p class="text-slate-500">useEffect → fetchData()</p>
+          <div class="mt-2 space-y-1 text-[10px] text-left text-slate-500">
+            <div class="bg-white rounded px-2 py-1">GET /api/overview?days=7</div>
+            <div class="bg-white rounded px-2 py-1">GET /api/campaigns</div>
+            <div class="bg-white rounded px-2 py-1">GET /api/performance/timeline</div>
+            <div class="bg-white rounded px-2 py-1">GET /api/alerts?limit=10</div>
+          </div>
+          <p class="text-slate-400 text-[9px] mt-2">Promise.all 병렬 호출</p>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="bg-emerald-50 rounded-xl p-4">
+          <p class="font-bold text-emerald-700 mb-2">2. WebSocket 연결</p>
+          <p class="text-slate-500">new WebSocket(WS_URL)</p>
+          <div class="mt-2 space-y-1 text-[10px] text-left text-slate-500">
+            <div class="bg-white rounded px-2 py-1">onopen → setConnected(true)</div>
+            <div class="bg-white rounded px-2 py-1">onmessage → type 분기</div>
+            <div class="bg-white rounded px-2 py-1">performance_update → fetchData()</div>
+            <div class="bg-white rounded px-2 py-1">creative_* → fetchContentData()</div>
+          </div>
+          <p class="text-slate-400 text-[9px] mt-2">서버 데이터 수집 시 자동 갱신</p>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="bg-purple-50 rounded-xl p-4">
+          <p class="font-bold text-purple-700 mb-2">3. 자동 폴링</p>
+          <p class="text-slate-500">setInterval 60초</p>
+          <div class="mt-2 space-y-1 text-[10px] text-left text-slate-500">
+            <div class="bg-white rounded px-2 py-1">60초마다 fetchData()</div>
+            <div class="bg-white rounded px-2 py-1">기간 변경 시 즉시 재호출</div>
+            <div class="bg-white rounded px-2 py-1">cleanup: clearInterval</div>
+          </div>
+          <p class="text-slate-400 text-[9px] mt-2">WebSocket 끊김 시 폴백</p>
+        </div>
+
+        <!-- Step 4 -->
+        <div class="bg-amber-50 rounded-xl p-4">
+          <p class="font-bold text-amber-700 mb-2">4. 채팅 인터랙션</p>
+          <p class="text-slate-500">handleSend()</p>
+          <div class="mt-2 space-y-1 text-[10px] text-left text-slate-500">
+            <div class="bg-white rounded px-2 py-1">POST /api/chat { message }</div>
+            <div class="bg-white rounded px-2 py-1">AdManagerSkill 처리</div>
+            <div class="bg-white rounded px-2 py-1">결과 → chatHistory 추가</div>
+            <div class="bg-white rounded px-2 py-1">scrollIntoView 자동 스크롤</div>
+          </div>
+          <p class="text-slate-400 text-[9px] mt-2">한국어/영어 NL 커맨드</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 5. DESIGN TOKENS ============ -->
+  <div class="max-w-7xl mx-auto mb-16">
+    <div class="mb-6">
+      <p class="label mb-1">Section 5</p>
+      <h2 class="section-title">디자인 토큰 & 스타일 시스템</h2>
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+      <!-- Colors -->
+      <div class="solid-box p-5">
+        <p class="text-sm font-bold text-slate-700 mb-3">Color Palette (Perplexity 스타일)</p>
+        <div class="space-y-2">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg bg-[#20B2AA] shadow-inner"></div>
+            <div>
+              <p class="text-sm font-medium">ppl-teal: #20B2AA</p>
+              <p class="text-[10px] text-slate-400">Primary accent, Send 버튼, 활성 탭, 커서</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg bg-[#14B8A6] shadow-inner"></div>
+            <div>
+              <p class="text-sm font-medium">ppl-accent: #14B8A6</p>
+              <p class="text-[10px] text-slate-400">ROAS 차트 라인, focus ring</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg bg-[#FAFAFA] border border-slate-200 shadow-inner"></div>
+            <div>
+              <p class="text-sm font-medium">ppl-bg: #FAFAFA</p>
+              <p class="text-[10px] text-slate-400">페이지 배경, 입력 필드 배경</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg bg-white border border-slate-200 shadow-inner"></div>
+            <div>
+              <p class="text-sm font-medium">ppl-card: #FFFFFF</p>
+              <p class="text-[10px] text-slate-400">카드, 사이드바, 탑바 배경</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg bg-[#1A1A1A] shadow-inner"></div>
+            <div>
+              <p class="text-sm font-medium">ppl-text: #1A1A1A</p>
+              <p class="text-[10px] text-slate-400">본문 텍스트, 제목</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg bg-[#6B7280] shadow-inner"></div>
+            <div>
+              <p class="text-sm font-medium">ppl-sub: #6B7280</p>
+              <p class="text-[10px] text-slate-400">보조 텍스트, 아이콘, 라벨</p>
+            </div>
+          </div>
+        </div>
+
+        <p class="text-sm font-bold text-slate-700 mt-5 mb-2">플랫폼 컬러</p>
+        <div class="flex gap-3">
+          <div class="flex items-center gap-2">
+            <span class="w-3 h-3 rounded bg-blue-500"></span>
+            <span class="text-xs">Meta (blue-600)</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="w-3 h-3 rounded bg-amber-500"></span>
+            <span class="text-xs">Google (amber-600)</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="w-3 h-3 rounded bg-slate-700"></span>
+            <span class="text-xs">TikTok (slate-700)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Typography & Spacing -->
+      <div class="solid-box p-5">
+        <p class="text-sm font-bold text-slate-700 mb-3">Typography</p>
+        <div class="space-y-2 mb-5">
+          <div class="flex items-baseline gap-3">
+            <span class="text-lg font-semibold">Performance Overview</span>
+            <span class="text-[10px] text-slate-400">text-lg font-semibold (카드 타이틀)</span>
+          </div>
+          <div class="flex items-baseline gap-3">
+            <span class="text-sm font-medium">봄 프로모션 캠페인</span>
+            <span class="text-[10px] text-slate-400">text-sm font-medium (항목명)</span>
+          </div>
+          <div class="flex items-baseline gap-3">
+            <span class="text-xs text-slate-400">ROAS 3.42 · CPA ₩1,580</span>
+            <span class="text-[10px] text-slate-400">text-xs text-ppl-sub (보조 정보)</span>
+          </div>
+          <div class="flex items-baseline gap-3">
+            <span class="text-xl font-bold text-blue-600">₩2,430,000</span>
+            <span class="text-[10px] text-slate-400">text-xl font-bold (KPI 값)</span>
+          </div>
+        </div>
+
+        <p class="text-sm font-bold text-slate-700 mb-3">Border & Radius</p>
+        <div class="space-y-2 text-xs text-slate-500">
+          <div class="flex items-center gap-2">
+            <div class="w-8 h-8 rounded-2xl bg-slate-100"></div>
+            <span>rounded-2xl — 카드, 채팅 버블</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <div class="w-8 h-8 rounded-xl bg-slate-100"></div>
+            <span>rounded-xl — KPI 박스, 입력창, 템플릿 카드</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <div class="w-8 h-8 rounded-lg bg-slate-100"></div>
+            <span>rounded-lg — 버튼, 캠페인 행, 배지</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <div class="w-8 h-8 rounded-md bg-slate-100"></div>
+            <span>rounded-md — 플랫폼 배지, 상태 배지</span>
+          </div>
+        </div>
+
+        <p class="text-sm font-bold text-slate-700 mt-5 mb-3">Animations</p>
+        <div class="space-y-1.5 text-xs text-slate-500">
+          <div>fadeInUp — 0.4s ease-out (서브에이전트 스텝, 메시지)</div>
+          <div>blink — 1s infinite (typing cursor)</div>
+          <div>pulse-dot — 1.5s ease-in-out infinite (running 상태)</div>
+          <div>transition-colors — 호버 상태 전환</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 6. RESPONSIVE ============ -->
+  <div class="max-w-7xl mx-auto mb-16">
+    <div class="mb-6">
+      <p class="label mb-1">Section 6</p>
+      <h2 class="section-title">반응형 & 인터랙션</h2>
+    </div>
+
+    <div class="grid grid-cols-3 gap-4">
+      <div class="solid-box p-4">
+        <p class="text-sm font-bold text-slate-700 mb-2">사이드바 토글</p>
+        <p class="text-xs text-slate-500">sidebarOpen 상태로 w-64 ↔ w-0 전환. transition-all duration-300 애니메이션. 탑바 좌측 햄버거 버튼으로 토글.</p>
+      </div>
+      <div class="solid-box p-4">
+        <p class="text-sm font-bold text-slate-700 mb-2">WebSocket 실시간</p>
+        <p class="text-xs text-slate-500">performance_update 이벤트 → 전체 데이터 재호출. creative/ab_test/audience 이벤트 → Content 데이터만 재호출. 연결 끊김 시 60초 폴링 폴백.</p>
+      </div>
+      <div class="solid-box p-4">
+        <p class="text-sm font-bold text-slate-700 mb-2">에러 처리</p>
+        <p class="text-xs text-slate-500">ErrorBoundary로 전체 크래시 방지. 재로드 버튼 제공. API 에러 시 catch → console.error, 채팅 에러 시 "서버 연결 오류" 메시지.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ FOOTER ============ -->
+  <div class="max-w-7xl mx-auto text-center py-8 border-t border-slate-200">
+    <p class="text-xs text-slate-400">Ad Automation Framework — Screen Design Document</p>
+    <p class="text-[10px] text-slate-300 mt-1">Generated from src/dashboard/index.html (839 lines, React 18 SPA)</p>
+  </div>
+
+</body>
+</html>

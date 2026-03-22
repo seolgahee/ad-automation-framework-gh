@@ -338,7 +338,12 @@ npm run dev
   - CSP `img-src`에 `https://*.fbcdn.net https://*.facebook.com` 추가
   - 썸네일 레이아웃 `h-40` → `aspect-square` (1:1 정방형) 변경
 
-**수집 결과**: Meta 소재 25개 중 25개 이미지 URL 수집 성공 (CDN-direct)
+- [x] **이미지 URL 백필 스크립트** (`scripts/backfill-image-urls.js`)
+  - DB에서 `image_url IS NULL`인 Meta ad_id를 조회하여 `getAdCreativeImages()` 호출 후 UPDATE만 수행
+  - `--all` 옵션으로 기존 URL 재수집 가능
+  - 이미지 조회 불가 소재 목록 출력 (ad_name, spend 포함)
+
+**수집 결과**: Meta 소재 72개 중 67개 이미지 URL 수집 성공 (93%), 5개 조회 불가 (아카이브/삭제 또는 다이나믹 소재)
 
 ---
 

@@ -156,6 +156,119 @@ export class MetaAdsClient extends BaseAdsClient {
     return result._data;
   }
 
+  // ─── Creative Image URL Resolution ────────────────────────
+
+  /**
+   * Resolve ad IDs to their creative image permalink URLs.
+   * @param {string[]} adIds - Array of Meta ad IDs
+   * @returns {Promise<Map<string, string>>} Map of adId → permalink_url
+   */
+  async getAdCreativeImages(adIds) {
+    this._ensureConfigured();
+    if (!adIds || adIds.length === 0) return new Map();
+
+    const imageMap = new Map();
+    const hashToAdIds = new Map(); // hash → [adId, ...]
+    const fallbackThumbnails = new Map(); // adId → thumbnail_url
+
+    // Batch fetch creative data (50 ads per request)
+    const batchSize = 50;
+    for (let i = 0; i < adIds.length; i += batchSize) {
+      const batch = adIds.slice(i, i + batchSize);
+      try {
+        const fields = ['id', 'creative{id,image_hash,thumbnail_url,object_story_spec,asset_feed_spec}'];
+        const params = { ids: batch.join(','), fields: fields.join(',') };
+
+        const response = await this._withTimeout(
+          this.api.call('GET', [''], params),
+          'getAdCreativeImages'
+        );
+
+        for (const adId of batch) {
+          const adData = response?.[adId]?.creative;
+          if (!adData) continue;
+
+          // Extract image_hash with priority order
+          let hash = null;
+          if (adData.asset_feed_spec?.images?.[0]?.hash) {
+            hash = adData.asset_feed_spec.images[0].hash;
+          } else if (adData.image_hash) {
+            hash = adData.image_hash;
+          } else if (adData.object_story_spec?.link_data?.image_hash) {
+            hash = adData.object_story_spec.link_data.image_hash;
+          } else if (adData.object_story_spec?.photo_data?.image_hash) {
+            hash = adData.object_story_spec.photo_data.image_hash;
+          } else if (adData.object_story_spec?.video_data?.image_hash) {
+            hash = adData.object_story_spec.video_data.image_hash;
+          }
+
+          if (hash) {
+            if (!hashToAdIds.has(hash)) hashToAdIds.set(hash, []);
+            hashToAdIds.get(hash).push(adId);
+          } else if (adData.thumbnail_url) {
+            fallbackThumbnails.set(adId, adData.thumbnail_url);
+          }
+        }
+      } catch (err) {
+        logger.warn(`Failed to fetch creative data for batch starting at index ${i}`, { error: err.message });
+      }
+    }
+
+    // Bulk resolve hashes → permalink_url via AdImage API
+    const uniqueHashes = [...hashToAdIds.keys()];
+    if (uniqueHashes.length > 0) {
+      try {
+        const hashBatchSize = 50;
+        for (let i = 0; i < uniqueHashes.length; i += hashBatchSize) {
+          const hashBatch = uniqueHashes.slice(i, i + hashBatchSize);
+          const response = await this._withTimeout(
+            this.api.call('GET', [this.accountId, 'adimages'], {
+              hashes: JSON.stringify(hashBatch),
+              fields: 'permalink_url,hash',
+            }),
+            'getAdImages'
+          );
+
+          const images = response?.data || [];
+          for (const img of images) {
+            if (img.permalink_url && hashToAdIds.has(img.hash)) {
+              for (const adId of hashToAdIds.get(img.hash)) {
+                imageMap.set(adId, img.permalink_url);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        logger.warn('Failed to resolve image hashes to permalink URLs', { error: err.message });
+      }
+    }
+
+    // Resolve permalink_url redirects to direct CDN URLs (permalink_url returns 302)
+    const resolvedMap = new Map();
+    const resolvePromises = [];
+    for (const [adId, url] of imageMap) {
+      resolvePromises.push(
+        fetch(url, { method: 'HEAD', redirect: 'manual' })
+          .then(res => {
+            const cdnUrl = res.headers.get('location');
+            resolvedMap.set(adId, cdnUrl || url);
+          })
+          .catch(() => resolvedMap.set(adId, url))
+      );
+    }
+    await Promise.all(resolvePromises);
+
+    // Apply thumbnail fallbacks for ads without resolved permalink
+    for (const [adId, thumbUrl] of fallbackThumbnails) {
+      if (!resolvedMap.has(adId)) {
+        resolvedMap.set(adId, thumbUrl);
+      }
+    }
+
+    logger.info(`Resolved ${resolvedMap.size}/${adIds.length} ad creative image URLs (CDN-direct)`);
+    return resolvedMap;
+  }
+
   // ─── Insights / Reporting ──────────────────────────────────
 
   /** Get campaign-level performance insights */

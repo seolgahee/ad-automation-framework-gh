@@ -600,7 +600,8 @@ app.get('/api/ad-performance', (req, res) => {
       CASE WHEN SUM(impressions) > 0 THEN SUM(spend) / SUM(impressions) * 1000 ELSE 0 END as cpm,
       CASE WHEN SUM(spend) > 0 THEN SUM(conversion_value) / SUM(spend) ELSE 0 END as roas,
       CASE WHEN SUM(conversions) > 0 THEN SUM(spend) / SUM(conversions) ELSE 0 END as cpa,
-      MAX(collected_at) as collected_at
+      MAX(collected_at) as collected_at,
+      MAX(image_url) as image_url
     FROM ad_performance
     WHERE ${since && until ? 'date_start >= ? AND date_start <= ?' : "date_start >= date('now', ? || ' days')"}
   `;
@@ -725,6 +726,18 @@ initDatabase();
 // Start data collector
 const collector = new DataCollector();
 collector.start();
+
+/** POST /api/collect — Manually trigger a data collection cycle */
+app.post('/api/collect', async (req, res) => {
+  try {
+    logger.info('Manual collection triggered via API');
+    await collector.collectAll();
+    res.json({ success: true, message: 'Collection cycle completed' });
+  } catch (err) {
+    logger.error('Manual collection failed', { error: err.message });
+    res.status(500).json({ error: 'Collection failed', details: err.message });
+  }
+});
 
 // Push fresh data to dashboard clients after each collection cycle (event-driven)
 collector.on('collected', () => {

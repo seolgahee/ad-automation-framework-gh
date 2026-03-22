@@ -136,15 +136,25 @@ export class DataCollector extends EventEmitter {
     const rows = await this.meta.getAdInsights({ datePreset: 'today' });
     const today = new Date().toISOString().split('T')[0];
 
+    // Resolve creative image URLs for all ads
+    const adIds = rows.map(r => r.adId);
+    let imageMap = new Map();
+    try {
+      imageMap = await this.meta.getAdCreativeImages(adIds);
+    } catch (err) {
+      logger.warn('Failed to fetch creative images, continuing without', { error: err.message });
+    }
+
     const upsert = db.prepare(`
       INSERT INTO ad_performance
         (ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name, platform, date_start,
-         impressions, clicks, spend, conversions, conversion_value, ctr, cpc, cpm, roas, cpa)
-      VALUES (?, ?, ?, ?, ?, ?, 'meta', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         impressions, clicks, spend, conversions, conversion_value, ctr, cpc, cpm, roas, cpa, image_url)
+      VALUES (?, ?, ?, ?, ?, ?, 'meta', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(ad_id, platform, date_start) DO UPDATE SET
         impressions=excluded.impressions, clicks=excluded.clicks, spend=excluded.spend,
         conversions=excluded.conversions, conversion_value=excluded.conversion_value,
         ctr=excluded.ctr, cpc=excluded.cpc, cpm=excluded.cpm, roas=excluded.roas, cpa=excluded.cpa,
+        image_url=COALESCE(excluded.image_url, ad_performance.image_url),
         collected_at=datetime('now')
     `);
 
@@ -154,12 +164,13 @@ export class DataCollector extends EventEmitter {
           r.adId, r.adName, r.adsetId, r.adsetName,
           `meta_${r.campaignId}`, r.campaignName, today,
           r.impressions, r.clicks, r.spend, r.conversions, r.conversionValue,
-          r.ctr, r.cpc, r.cpm, r.roas, r.cpa
+          r.ctr, r.cpc, r.cpm, r.roas, r.cpa,
+          imageMap.get(r.adId) || null
         );
       }
     });
     transaction();
-    logger.info(`meta ad-level: synced ${rows.length} ad rows`);
+    logger.info(`meta ad-level: synced ${rows.length} ad rows (${imageMap.size} with images)`);
   }
 
   /** Collect Google performance and upsert */
@@ -176,7 +187,8 @@ export class DataCollector extends EventEmitter {
         budget: c.dailyBudget,
       })
     );
-    await this._collectGoogleAdLevel();
+    // TODO: Google ad-level 임시 비활성화 (데이터 과다로 대시보드 느려짐, Meta 소재 이미지 수집 선행 테스트 중)
+    // await this._collectGoogleAdLevel();
   }
 
   /** Collect Google ad-level insights */

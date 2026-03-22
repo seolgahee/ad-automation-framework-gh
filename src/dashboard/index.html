@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ad Automation — Perplexity Style</title>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' ws: wss: http://localhost:* https://localhost:*; img-src 'self' data:;" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' ws: wss: http://localhost:* https://localhost:*; img-src 'self' data: https://*.fbcdn.net https://*.facebook.com;" />
   <!--
     PRODUCTION NOTE: For deployment, generate SRI hashes for each script:
       openssl dgst -sha384 -binary <file> | openssl base64 -A
@@ -335,7 +335,7 @@
       const [adPerfSummary, setAdPerfSummary] = useState(null);
       const [adPerfSort, setAdPerfSort] = useState('spend');
       const [adPerfFilter, setAdPerfFilter] = useState('all'); // all, best, good, low
-      const [adPerfPlatform, setAdPerfPlatform] = useState('all');
+      const [adPerfPlatform, setAdPerfPlatform] = useState('meta'); // 기본 Meta (Google 소재 7600건으로 속도 이슈, 필요시 All/Google 선택 가능)
       const defaultAdPerfSince = new Date(Date.now() - 6 * 86400000).toISOString().split('T')[0];
       const [adPerfDateRange, setAdPerfDateRange] = useState({ since: defaultAdPerfSince, until: today });
       const [adPerfCampaignId, setAdPerfCampaignId] = useState('');
@@ -1199,16 +1199,28 @@
                   return (
                     <div key={`${row.ad_id}-${row.platform}-${idx}`}
                       className="bg-white rounded-xl border border-ppl-border overflow-hidden hover:shadow-md hover:border-ppl-teal/40 transition-all group cursor-pointer">
-                      {/* Thumbnail placeholder */}
-                      <div className={`h-40 bg-gradient-to-br ${getThumbColor(row.ad_id)} relative flex items-center justify-center`}>
-                        <div className="text-white/80 text-center px-4">
-                          <p className="text-sm font-semibold leading-tight line-clamp-3 drop-shadow">{row.ad_name || row.ad_id}</p>
+                      {/* Thumbnail (1:1 square) */}
+                      {row.image_url ? (
+                        <div className="aspect-square relative overflow-hidden bg-gray-100">
+                          <img src={row.image_url} alt={row.ad_name || row.ad_id}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              e.target.style.display = 'none';
+                              e.target.parentElement.classList.add('bg-gradient-to-br', ...getThumbColor(row.ad_id).split(' '));
+                              e.target.parentElement.innerHTML = `<div class="flex items-center justify-center h-full"><div class="text-white/80 text-center px-4"><p class="text-sm font-semibold leading-tight line-clamp-3 drop-shadow">${(row.ad_name || row.ad_id).replace(/</g, '&lt;')}</p></div></div>`;
+                            }} />
+                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
                         </div>
-                        {/* Hover overlay hint */}
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
-                          <span className="opacity-0 group-hover:opacity-100 transition-opacity text-white text-xs bg-black/40 px-2 py-1 rounded-lg">이미지 미수집</span>
+                      ) : (
+                        <div className={`aspect-square bg-gradient-to-br ${getThumbColor(row.ad_id)} relative flex items-center justify-center`}>
+                          <div className="text-white/80 text-center px-4">
+                            <p className="text-sm font-semibold leading-tight line-clamp-3 drop-shadow">{row.ad_name || row.ad_id}</p>
+                          </div>
+                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+                            <span className="opacity-0 group-hover:opacity-100 transition-opacity text-white text-xs bg-black/40 px-2 py-1 rounded-lg">이미지 미수집</span>
+                          </div>
                         </div>
-                      </div>
+                      )}
 
                       {/* Badges */}
                       <div className="px-3 pt-2.5 flex items-center gap-1.5">

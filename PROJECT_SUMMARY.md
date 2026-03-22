@@ -314,6 +314,32 @@ npm run dev
 ### 테스트 결과
 - 94개 테스트 전체 통과 (모든 변경 후 확인)
 
+### Meta 소재 이미지 URL 수집 및 Creatives 갤러리 이미지 표시
+
+- [x] **DB 스키마 확장** (`src/utils/db.js`)
+  - `ad_performance` 테이블에 `image_url TEXT` 컬럼 추가
+  - `migrateAddImageUrl()` 마이그레이션 함수 추가 — `PRAGMA table_info`로 컬럼 존재 여부 확인 후 조건부 `ALTER TABLE`
+- [x] **Meta Client 이미지 URL 조회 메서드** (`src/meta/client.js`)
+  - `getAdCreativeImages(adIds)` 신규 메서드 추가
+  - Ad → Creative → `image_hash` 추출 (우선순위: `asset_feed_spec.images[0].hash` → `image_hash` → `object_story_spec` 하위 필드)
+  - AdImage API로 hash → `permalink_url` 일괄 변환 (50개씩 배치)
+  - `permalink_url`은 302 리다이렉트이므로, `fetch(HEAD, redirect:manual)`로 `Location` 헤더의 CDN 직접 URL(`scontent-*.fbcdn.net`) 추출하여 저장
+  - Fallback: hash 없는 소재는 `thumbnail_url` 사용
+- [x] **Collector 연동** (`src/analytics/collector.js`)
+  - `_collectMetaAdLevel()` — `getAdInsights()` 후 `getAdCreativeImages()` 호출
+  - UPSERT에 `image_url` 추가, `COALESCE(excluded.image_url, ad_performance.image_url)`로 기존 값 보존
+- [x] **API 수정** (`src/server.js`)
+  - `/api/ad-performance` SELECT에 `MAX(image_url) as image_url` 추가
+  - `POST /api/collect` 수동 수집 트리거 엔드포인트 추가
+- [x] **대시보드 UI** (`src/dashboard/index.html`)
+  - `row.image_url` 존재 시 `<img>` 태그로 실제 이미지 표시 (`object-cover`, `aspect-square`)
+  - 이미지 없는 소재: 기존 그라디언트 placeholder + "이미지 미수집" hover 유지
+  - `<img> onerror` 처리: 로드 실패 시 그라디언트 fallback
+  - CSP `img-src`에 `https://*.fbcdn.net https://*.facebook.com` 추가
+  - 썸네일 레이아웃 `h-40` → `aspect-square` (1:1 정방형) 변경
+
+**수집 결과**: Meta 소재 25개 중 25개 이미지 URL 수집 성공 (CDN-direct)
+
 ---
 
 ## 기술 노트
@@ -374,7 +400,7 @@ GROUP BY platform;
 - [x] 크리에이티브 관리 대시보드 UI 구현 — 소재 성과 갤러리 (Creatives 뷰)
 - [ ] 소재(Ad) 레벨 **과거 데이터 백필** 점검 — 현재 3/18~3/19만 수집됨. `collect-historical.js`에 ad-level 백필 지원 추가 또는 별도 스크립트 필요
 - [x] 소재 성과 갤러리 **달력(Date Picker) 기간 선택** 구현 — 퀵셀렉트(7/14/30일) + 시작일~종료일 달력 + 캠페인/광고그룹 cascading 필터 추가 완료
-- [ ] 소재 이미지 URL 별도 수집 필요 — `ad_performance`와 `ads` 테이블 모두 이미지 URL 미보유. Meta Ad Creative API(`/act_{ad_account_id}/adcreatives`)에서 `image_url`, `thumbnail_url` 등을 수집하는 로직 신규 구현 필요
+- [x] 소재 이미지 URL 수집 구현 완료 — `ad_performance.image_url` 컬럼 추가, Meta AdCreative API → AdImage API → CDN URL 변환 파이프라인, 대시보드 이미지 표시 + CSP 수정
 - [ ] ads/ad_groups FK 연결 보류 — 비정규화 설계 유지 (성과 조회는 `ad_performance` 단독으로 충분)
 - [x] 소재(Ad) 레벨 데이터 수집 — Meta `getAdInsights` + Google `getAdInsights` (ad_group_ad + PMAX asset_group 병행) 구현 완료
 - [ ] Google standard ad(DISPLAY/SEARCH) 소재 데이터 0건 원인 — 운영 중단/예산 미배정인지, API 이슈인지 Google Ads 대시보드에서 확인 필요

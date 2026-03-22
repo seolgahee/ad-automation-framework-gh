@@ -12,6 +12,24 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+/** Migrate ad_performance: add image_url column if missing */
+function migrateAddImageUrl() {
+  const colExists = db.prepare(
+    `PRAGMA table_info(ad_performance)`
+  ).all().some(col => col.name === 'image_url');
+
+  if (colExists) return;
+
+  // Table might not exist yet — that's fine, CREATE TABLE below will include the column
+  const tableExists = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='ad_performance'`
+  ).get();
+  if (!tableExists) return;
+
+  logger.info('Adding image_url column to ad_performance');
+  db.exec(`ALTER TABLE ad_performance ADD COLUMN image_url TEXT`);
+}
+
 /** Migrate ad_performance table to add platform CHECK & UNIQUE constraints */
 function migrateAdPerformance() {
   const tableExists = db.prepare(
@@ -49,6 +67,7 @@ function migrateAdPerformance() {
         cpm              REAL DEFAULT 0,
         roas             REAL DEFAULT 0,
         cpa              REAL DEFAULT 0,
+        image_url        TEXT,
         collected_at     TEXT DEFAULT (datetime('now')),
         UNIQUE(ad_id, platform, date_start)
       )
@@ -79,8 +98,9 @@ function migrateAdPerformance() {
 
 /** Initialize all tables */
 export function initDatabase() {
-  // Run migration before CREATE TABLE IF NOT EXISTS (which would be a no-op on existing tables)
+  // Run migrations before CREATE TABLE IF NOT EXISTS (which would be a no-op on existing tables)
   migrateAdPerformance();
+  migrateAddImageUrl();
 
   db.exec(`
     -- Campaign master data (unified across platforms)
@@ -187,6 +207,7 @@ export function initDatabase() {
       cpm              REAL DEFAULT 0,
       roas             REAL DEFAULT 0,
       cpa              REAL DEFAULT 0,
+      image_url        TEXT,
       collected_at     TEXT DEFAULT (datetime('now')),
       UNIQUE(ad_id, platform, date_start)
     );

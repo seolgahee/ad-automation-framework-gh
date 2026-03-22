@@ -548,10 +548,10 @@
             <p className="text-xs font-medium text-ppl-sub uppercase tracking-wider px-2 mb-2 mt-6">Content</p>
             {[
               { icon: Icons.layers, label: 'Creatives', action: () => setActiveView('creatives') },
-              { icon: Icons.code, label: 'Templates', action: () => setContentTab('templates') },
-              { icon: Icons.beaker, label: 'A/B Tests', action: () => setContentTab('ab-tests') },
-              { icon: Icons.users, label: 'Audiences', action: () => setContentTab('audiences') },
-              { icon: Icons.upload, label: 'Creative Upload', action: () => setContentTab('upload') },
+              { icon: Icons.code, label: 'Templates', action: () => { setActiveView('dashboard'); setContentTab('templates'); } },
+              { icon: Icons.beaker, label: 'A/B Tests', action: () => { setActiveView('dashboard'); setContentTab('ab-tests'); } },
+              { icon: Icons.users, label: 'Audiences', action: () => { setActiveView('dashboard'); setContentTab('audiences'); } },
+              { icon: Icons.upload, label: 'Creative Upload', action: () => { setActiveView('dashboard'); setContentTab('upload'); } },
             ].map((item, i) => (
               <button key={i} onClick={item.action}
                 className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${
@@ -766,7 +766,7 @@
 
             {/* Creative Upload Tab */}
             {contentTab === 'upload' && (
-              <div className="space-y-4">
+              <div className="space-y-4" ref={el => { if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-md font-medium">Meta 전용</span>
                   <p className="text-xs text-ppl-sub">템플릿 기반으로 Meta 광고 소재를 등록합니다.</p>

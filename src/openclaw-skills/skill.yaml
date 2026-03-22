@@ -1,0 +1,35 @@
+# OpenClaw Skill Manifest — Ad Automation
+# Place this in your OpenClaw workspace skills directory
+# e.g. ~/.openclaw/workspaces/ad-automation/skills/ad-manager/
+
+name: ad-manager
+version: 1.0.0
+description: |
+  Meta & Google Ads 캠페인 관리, 성과 분석, 예산 최적화를
+  자연어 대화로 수행할 수 있는 OpenClaw 스킬
+
+triggers:
+  - pattern: "광고|성과|캠페인|예산|ROAS|CPA|리포트|최적화"
+    priority: high
+  - pattern: "ads?|campaign|budget|report|optimize"
+    priority: medium
+
+capabilities:
+  - campaign_management
+  - performance_reporting
+  - budget_optimization
+  - alerting
+
+entry: ./ad-manager.skill.js
+
+settings:
+  collect_interval: 15    # minutes
+  alert_roas_min: 1.5
+  alert_cpa_max: 50000    # KRW (₩50,000)
+  auto_pause_enabled: false
+  auto_budget_enabled: false
+
+permissions:
+  - network       # API calls to Meta/Google
+  - database      # SQLite read/write
+  - notifications # Slack/Telegram alerts

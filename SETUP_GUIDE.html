@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Ad Automation — 설치 &amp; 사용 가이드</title>
+<style>
+:root {
+  --teal: #14B8A6; --teal-dark: #0D9488; --teal-light: #CCFBF1; --teal-50: #F0FDFA;
+  --blue: #3B82F6; --blue-light: #EFF6FF; --blue-dark: #2563EB;
+  --amber: #F59E0B; --amber-light: #FFFBEB; --amber-dark: #D97706;
+  --emerald: #10B981; --emerald-light: #ECFDF5;
+  --red: #EF4444; --red-light: #FEF2F2;
+  --purple: #8B5CF6; --purple-light: #F5F3FF;
+  --gray-50: #F9FAFB; --gray-100: #F3F4F6; --gray-200: #E5E7EB; --gray-300: #D1D5DB;
+  --gray-400: #9CA3AF; --gray-500: #6B7280; --gray-600: #4B5563; --gray-700: #374151;
+  --gray-800: #1F2937; --gray-900: #111827;
+  --radius: 16px; --radius-sm: 10px; --radius-xs: 6px;
+  --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.07);
+  --shadow-lg: 0 8px 25px rgba(0,0,0,0.1);
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+
+/* ─── Layout ─── */
+.container { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+
+/* ─── Nav ─── */
+.nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; background: rgba(255,255,255,0.92); backdrop-filter: blur(12px); border-bottom: 1px solid var(--gray-200); height: 56px; display: flex; align-items: center; }
+.nav-inner { max-width: 900px; margin: 0 auto; padding: 0 24px; width: 100%; display: flex; align-items: center; justify-content: space-between; }
+.nav-logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 14px; }
+.nav-logo-icon { width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, var(--teal), var(--teal-dark)); display: flex; align-items: center; justify-content: center; color: white; font-weight: 800; font-size: 14px; }
+.nav-steps { display: flex; gap: 4px; }
+.nav-dot { width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--gray-300); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: var(--gray-400); cursor: pointer; transition: all 0.3s; text-decoration: none; }
+.nav-dot:hover { border-color: var(--teal); color: var(--teal); }
+.nav-dot.active { background: var(--teal); border-color: var(--teal); color: white; }
+.nav-dot.done { background: var(--emerald); border-color: var(--emerald); color: white; }
+
+/* ─── Hero ─── */
+.hero { background: linear-gradient(135deg, #0D9488 0%, #14B8A6 40%, #2DD4BF 100%); color: white; padding: 100px 24px 60px; text-align: center; }
+.hero h1 { font-size: 40px; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 12px; }
+.hero p { font-size: 17px; opacity: 0.85; max-width: 600px; margin: 0 auto 28px; line-height: 1.7; }
+.hero-badge { display: inline-flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.2); backdrop-filter: blur(8px); padding: 6px 18px; border-radius: 100px; font-size: 13px; font-weight: 600; margin-bottom: 24px; }
+.hero-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: white; animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.hero-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; max-width: 700px; margin: 0 auto; }
+.hero-card { background: rgba(255,255,255,0.15); backdrop-filter: blur(8px); border-radius: 14px; padding: 16px 12px; text-align: center; cursor: pointer; transition: all 0.2s; text-decoration: none; color: white; border: 1px solid rgba(255,255,255,0.15); }
+.hero-card:hover { background: rgba(255,255,255,0.25); transform: translateY(-2px); }
+.hero-card .num { width: 36px; height: 36px; border-radius: 10px; background: rgba(255,255,255,0.2); display: flex; align-items: center; justify-content: center; margin: 0 auto 8px; font-weight: 800; font-size: 16px; }
+.hero-card .label { font-size: 12px; font-weight: 600; }
+.hero-card .sub { font-size: 10px; opacity: 0.7; margin-top: 2px; }
+
+/* ─── Sections ─── */
+.section { padding: 48px 0; }
+.section-header { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 24px; }
+.section-num { width: 48px; height: 48px; border-radius: 16px; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 800; flex-shrink: 0; }
+.section-title { font-size: 24px; font-weight: 800; letter-spacing: -0.02em; }
+.section-desc { font-size: 14px; color: var(--gray-500); margin-top: 4px; }
+
+/* ─── Cards ─── */
+.card { background: white; border: 1px solid var(--gray-200); border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow); margin-bottom: 16px; }
+.card-tight { padding: 16px 20px; }
+
+/* ─── Buttons ─── */
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; border: none; cursor: pointer; transition: all 0.2s; text-decoration: none; }
+.btn-primary { background: var(--teal); color: white; }
+.btn-primary:hover { background: var(--teal-dark); }
+.btn-sm { padding: 6px 14px; font-size: 12px; border-radius: var(--radius-xs); }
+.btn-ghost { background: var(--gray-100); color: var(--gray-600); }
+.btn-ghost:hover { background: var(--gray-200); }
+.btn-ghost.active { background: var(--teal); color: white; box-shadow: 0 2px 8px rgba(20,184,166,0.3); }
+.btn-copy { background: var(--gray-700); color: var(--gray-300); }
+.btn-copy:hover { background: var(--gray-600); }
+.btn-copy.copied { background: var(--emerald); color: white; }
+.btn-full { width: 100%; justify-content: center; padding: 14px; font-size: 14px; border-radius: 14px; background: linear-gradient(135deg, var(--teal), var(--teal-dark)); color: white; box-shadow: 0 4px 14px rgba(20,184,166,0.25); }
+.btn-full:hover { box-shadow: 0 6px 20px rgba(20,184,166,0.35); transform: translateY(-1px); }
+
+/* ─── Tabs ─── */
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 20px; }
+
+/* ─── Code Block ─── */
+.code { background: var(--gray-900); border-radius: var(--radius-sm); padding: 16px 20px; position: relative; margin: 8px 0; }
+.code-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.code-label { font-size: 11px; color: var(--gray-400); font-weight: 500; }
+.code pre { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 13px; color: #A5F3FC; line-height: 1.6; overflow-x: auto; white-space: pre; margin: 0; }
+.code pre .comment { color: var(--gray-500); }
+.code pre .prompt { color: var(--gray-500); }
+.code pre .output { color: #86EFAC; }
+.code pre .highlight { color: #FDE68A; }
+
+/* ─── Input Fields ─── */
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: 12px; font-weight: 600; color: var(--gray-600); margin-bottom: 4px; }
+.field label .hint { font-weight: 400; color: var(--gray-400); }
+.field input, .field select { width: 100%; padding: 10px 14px; border: 1.5px solid var(--gray-200); border-radius: var(--radius-sm); font-size: 13px; transition: all 0.2s; background: white; font-family: inherit; }
+.field input:focus, .field select:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(20,184,166,0.12); outline: none; }
+.field input.filled { border-color: var(--emerald); background: var(--emerald-light); }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+/* ─── Callout Boxes ─── */
+.callout { border-radius: var(--radius-sm); padding: 14px 18px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+.callout-blue { background: var(--blue-light); color: #1E40AF; border: 1px solid #BFDBFE; }
+.callout-amber { background: var(--amber-light); color: #92400E; border: 1px solid #FDE68A; }
+.callout-green { background: var(--emerald-light); color: #065F46; border: 1px solid #A7F3D0; }
+.callout-red { background: var(--red-light); color: #991B1B; border: 1px solid #FECACA; }
+.callout-purple { background: var(--purple-light); color: #5B21B6; border: 1px solid #DDD6FE; }
+.callout b, .callout strong { font-weight: 700; }
+
+/* ─── Steps ─── */
+.steps { counter-reset: step-counter; }
+.step-item { display: flex; gap: 14px; margin-bottom: 14px; }
+.step-num { width: 28px; height: 28px; border-radius: 50%; background: var(--gray-100); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: var(--gray-500); flex-shrink: 0; margin-top: 2px; }
+.step-text { font-size: 13px; line-height: 1.6; color: var(--gray-700); }
+.step-text a { color: var(--blue); text-decoration: underline; font-weight: 600; }
+
+/* ─── Accordion ─── */
+.accordion { border: 1px solid var(--gray-200); border-radius: var(--radius-sm); overflow: hidden; margin-bottom: 8px; background: white; }
+.accordion-trigger { width: 100%; padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; color: var(--gray-700); background: white; border: none; cursor: pointer; text-align: left; }
+.accordion-trigger:hover { background: var(--gray-50); }
+.accordion-arrow { width: 16px; height: 16px; transition: transform 0.3s; color: var(--gray-400); }
+.accordion-body { max-height: 0; overflow: hidden; transition: max-height 0.4s ease; }
+.accordion-body.open { max-height: 2000px; }
+.accordion-body-inner { padding: 0 18px 16px; font-size: 13px; color: var(--gray-600); line-height: 1.7; }
+
+/* ─── Check items ─── */
+.check-item { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-top: 1px solid var(--gray-100); }
+.check-item input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--teal); cursor: pointer; flex-shrink: 0; }
+.check-item span { font-size: 13px; font-weight: 500; color: var(--gray-700); }
+
+/* ─── Chat Demo ─── */
+.chat-demo { background: var(--gray-100); border-radius: var(--radius); padding: 16px; max-height: 400px; overflow-y: auto; }
+.chat-msg { margin-bottom: 12px; display: flex; }
+.chat-msg.user { justify-content: flex-end; }
+.chat-bubble { max-width: 70%; padding: 10px 16px; border-radius: 16px; font-size: 13px; line-height: 1.5; }
+.chat-msg.user .chat-bubble { background: var(--teal); color: white; border-bottom-right-radius: 4px; }
+.chat-msg.bot .chat-bubble { background: white; color: var(--gray-700); border-bottom-left-radius: 4px; box-shadow: var(--shadow); }
+.chat-input-area { display: flex; gap: 8px; margin-top: 12px; }
+.chat-input-area input { flex: 1; padding: 10px 16px; border: 1.5px solid var(--gray-200); border-radius: 12px; font-size: 13px; background: white; }
+.chat-input-area input:focus { border-color: var(--teal); outline: none; box-shadow: 0 0 0 3px rgba(20,184,166,0.12); }
+.chat-input-area button { padding: 10px 16px; border-radius: 12px; background: var(--teal); color: white; border: none; cursor: pointer; font-weight: 600; font-size: 13px; }
+
+/* ─── Feature Grid ─── */
+.feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.feature-card { background: white; border: 1px solid var(--gray-200); border-radius: var(--radius-sm); padding: 16px; transition: all 0.2s; }
+.feature-card:hover { border-color: var(--teal); box-shadow: var(--shadow-md); transform: translateY(-2px); }
+.feature-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; margin-bottom: 10px; }
+.feature-name { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+.feature-desc { font-size: 11px; color: var(--gray-500); line-height: 1.5; }
+
+/* ─── Command Table ─── */
+.cmd-table { width: 100%; border-collapse: collapse; }
+.cmd-table tr { border-bottom: 1px solid var(--gray-100); }
+.cmd-table tr:last-child { border: none; }
+.cmd-table td { padding: 10px 0; font-size: 13px; vertical-align: middle; }
+.cmd-code { font-family: 'SF Mono','Fira Code','Consolas', monospace; font-size: 12px; background: var(--gray-900); color: #A5F3FC; padding: 4px 10px; border-radius: 6px; white-space: nowrap; }
+.cmd-highlight { background: var(--teal-light); border-radius: 8px; }
+.cmd-highlight td { padding: 12px 10px; }
+
+/* ─── Platform Badges ─── */
+.badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600; }
+.badge-meta { background: var(--blue-light); color: var(--blue-dark); }
+.badge-google { background: var(--amber-light); color: var(--amber-dark); }
+.badge-tiktok { background: var(--gray-100); color: var(--gray-700); }
+
+/* ─── Env Preview ─── */
+.env-result { display: none; margin-top: 20px; animation: fadeIn 0.4s; }
+.env-result.show { display: block; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ─── Responsive ─── */
+@media (max-width: 640px) {
+  .hero h1 { font-size: 28px; }
+  .hero-cards { grid-template-columns: repeat(2, 1fr); }
+  .feature-grid { grid-template-columns: 1fr; }
+  .field-row { grid-template-columns: 1fr; }
+  .nav-steps { display: none; }
+}
+
+/* ─── Hidden util ─── */
+.hidden { display: none !important; }
+
+/* ─── Divider ─── */
+.divider { height: 1px; background: var(--gray-200); margin: 20px 0; }
+</style>
+</head>
+<body>
+
+<!-- ========== NAV ========== -->
+<nav class="nav">
+  <div class="nav-inner">
+    <div class="nav-logo">
+      <div class="nav-logo-icon">A</div>
+      <span>Ad Automation Guide</span>
+    </div>
+    <div class="nav-steps" id="navDots">
+      <a href="#sec-install" class="nav-dot" data-step="0">0</a>
+      <a href="#sec-npm" class="nav-dot" data-step="1">1</a>
+      <a href="#sec-env" class="nav-dot" data-step="2">2</a>
+      <a href="#sec-setup" class="nav-dot" data-step="3">3</a>
+      <a href="#sec-run" class="nav-dot" data-step="4">4</a>
+      <a href="#sec-use" class="nav-dot" data-step="5">5</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ========== HERO ========== -->
+<header class="hero">
+  <div class="hero-badge"><span class="dot"></span> 비개발자를 위한 설치 &amp; 사용 가이드</div>
+  <h1>Ad Automation Framework</h1>
+  <p>Meta, Google, TikTok 광고를 한 곳에서 자동 관리하는 프레임워크입니다.<br>아래 단계를 하나씩 따라하면 누구나 설치하고 사용할 수 있습니다.</p>
+  <div class="hero-cards">
+    <a href="#sec-install" class="hero-card"><div class="num">0</div><div class="label">Node.js 설치</div><div class="sub">사전 준비</div></a>
+    <a href="#sec-env" class="hero-card"><div class="num">2</div><div class="label">API 키 연결</div><div class="sub">플랫폼 설정</div></a>
+    <a href="#sec-run" class="hero-card"><div class="num">4</div><div class="label">실행하기</div><div class="sub">대시보드 열기</div></a>
+    <a href="#sec-use" class="hero-card"><div class="num">5</div><div class="label">사용법</div><div class="sub">기능 가이드</div></a>
+  </div>
+</header>
+
+<!-- ==================== STEP 0: Node.js ==================== -->
+<div class="container">
+<section id="sec-install" class="section">
+  <div class="section-header">
+    <div class="section-num" style="background:var(--blue-light);color:var(--blue);">0</div>
+    <div><div class="section-title">사전 준비 — Node.js 설치</div><div class="section-desc">이 프레임워크를 실행하려면 <strong>Node.js v22 이상</strong>이 필요합니다.</div></div>
+  </div>
+
+  <div class="card">
+    <p style="font-size:14px;font-weight:600;color:var(--gray-700);margin-bottom:12px;">내 운영체제 선택:</p>
+    <div class="tabs">
+      <button class="btn btn-sm btn-ghost active" onclick="showTab('os',this,'mac')">🍎 macOS</button>
+      <button class="btn btn-sm btn-ghost" onclick="showTab('os',this,'win')">🪟 Windows</button>
+      <button class="btn btn-sm btn-ghost" onclick="showTab('os',this,'linux')">🐧 Linux</button>
+    </div>
+
+    <div id="os-mac">
+      <div class="callout callout-blue">
+        <strong>가장 쉬운 방법:</strong> <a href="https://nodejs.org" target="_blank">nodejs.org</a> 접속 → <strong>LTS 버전</strong> (v22+) macOS Installer 다운로드 → <code>.pkg</code> 파일 실행 → "다음" 버튼만 누르면 끝!
+      </div>
+      <div class="code">
+        <div class="code-header"><span class="code-label">또는 Homebrew로 설치</span><button class="btn btn-sm btn-copy" onclick="doCopy(this,'brew install node@22')">복사</button></div>
+        <pre>brew install node@22</pre>
+      </div>
+    </div>
+    <div id="os-win" class="hidden">
+      <div class="callout callout-blue">
+        <strong>설치 방법:</strong> <a href="https://nodejs.org" target="_blank">nodejs.org</a> 접속 → <strong>LTS 버전</strong> Windows Installer (.msi) 다운로드 → 실행 → "Next" 계속 클릭. <strong>"Add to PATH"</strong> 체크 확인!
+      </div>
+      <div class="callout callout-amber"><strong>⚠ 중요:</strong> 설치 후 반드시 <strong>명령 프롬프트(cmd)를 새로 열어서</strong> 확인하세요.</div>
+    </div>
+    <div id="os-linux" class="hidden">
+      <div class="code">
+        <div class="code-header"><span class="code-label">Ubuntu / Debian</span><button class="btn btn-sm btn-copy" onclick="doCopy(this,'curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -\nsudo apt-get install -y nodejs')">복사</button></div>
+        <pre>curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs</pre>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <p style="font-size:14px;font-weight:600;color:var(--gray-700);margin-bottom:8px;">✅ 설치 확인</p>
+    <div class="code">
+      <div class="code-header"><span class="code-label">Terminal / 명령 프롬프트</span><button class="btn btn-sm btn-copy" onclick="doCopy(this,'node -v')">복사</button></div>
+      <pre><span class="prompt">$</span> node -v
+<span class="output">v22.x.x</span>  <span class="comment">← 이렇게 나오면 성공!</span></pre>
+    </div>
+    <div class="check-item">
+      <input type="checkbox" data-step="0" onchange="updateNav()"/>
+      <span>Node.js v22 이상이 설치되었습니다</span>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== STEP 1: npm install ==================== -->
+<section id="sec-npm" class="section">
+  <div class="section-header">
+    <div class="section-num" style="background:var(--purple-light);color:var(--purple);">1</div>
+    <div><div class="section-title">패키지 설치</div><div class="section-desc">프레임워크에 필요한 라이브러리를 자동으로 다운로드합니다.</div></div>
+  </div>
+
+  <div class="card">
+    <div class="step-item">
+      <div class="step-num" style="background:var(--purple-light);color:var(--purple);">1</div>
+      <div class="step-text">
+        <strong>터미널을 열고</strong> 프로젝트 폴더로 이동합니다.
+        <div class="code" style="margin-top:8px">
+          <div class="code-header"><span class="code-label">Terminal</span><button class="btn btn-sm btn-copy" onclick="doCopy(this,'cd ad-automation-framework')">복사</button></div>
+          <pre><span class="prompt">$</span> cd ad-automation-framework</pre>
+        </div>
+        <div class="callout callout-amber" style="margin-top:8px"><strong>💡 팁:</strong> 폴더가 바탕화면에 있다면 → Mac: <code>cd ~/Desktop/ad-automation-framework</code> / Windows: <code>cd %USERPROFILE%\Desktop\ad-automation-framework</code></div>
+      </div>
+    </div>
+
+    <div class="step-item">
+      <div class="step-num" style="background:var(--purple-light);color:var(--purple);">2</div>
+      <div class="step-text">
+        <strong>아래 명령어를 입력</strong>하면 자동으로 설치됩니다. (30초~2분 소요)
+        <div class="code" style="margin-top:8px">
+          <div class="code-header"><span class="code-label">Terminal</span><button class="btn btn-sm btn-copy" onclick="doCopy(this,'npm install')">복사</button></div>
+          <pre><span class="prompt">$</span> npm install
+
+<span class="output">added 150 packages in 30s</span>  <span class="comment">← 이런 메시지가 나오면 성공!</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="check-item">
+      <input type="checkbox" data-step="1" onchange="updateNav()"/>
+      <span>npm install이 에러 없이 완료되었습니다</span>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== STEP 2: .env (API Key) ==================== -->
+<section id="sec-env" class="section">
+  <div class="section-header">
+    <div class="section-num" style="background:var(--amber-light);color:var(--amber-dark);">2</div>
+    <div><div class="section-title">API 키 연결 (가장 중요!)</div><div class="section-desc">광고 플랫폼과 연결하기 위한 인증 키를 설정합니다. 아래에 입력하면 <strong>.env 파일을 자동 생성</strong>해드립니다.</div></div>
+  </div>
+
+  <div class="card">
+    <div class="callout callout-amber" style="margin-bottom:20px">
+      <strong>🔑 API 키란?</strong> 광고 플랫폼에서 발급하는 "비밀번호" 같은 것입니다. <strong>최소 1개 플랫폼</strong>의 키만 있으면 시작할 수 있어요.
+    </div>
+
+    <!-- Platform Tabs -->
+    <div class="tabs" id="envTabs">
+      <button class="btn btn-sm btn-ghost active" onclick="showTab('plt',this,'meta')"><span class="badge badge-meta">f</span> Meta</button>
+      <button class="btn btn-sm btn-ghost" onclick="showTab('plt',this,'google')"><span class="badge badge-google">G</span> Google</button>
+      <button class="btn btn-sm btn-ghost" onclick="showTab('plt',this,'tiktok')"><span class="badge badge-tiktok">T</span> TikTok</button>
+      <button class="btn btn-sm btn-ghost" onclick="showTab('plt',this,'noti')">🔔 알림</button>
+      <button class="btn btn-sm btn-ghost" onclick="showTab('plt',this,'server')">⚙ 서버</button>
+    </div>
+
+    <!-- META -->
+    <div id="plt-meta">
+      <div class="callout callout-blue" style="margin-bottom:16px">
+        <strong>Meta API 키 발급:</strong>
+        <div class="steps" style="margin-top:8px">
+          <div class="step-item"><div class="step-num" style="background:#BFDBFE;color:#1E40AF">1</div><div class="step-text"><a href="https://developers.facebook.com" target="_blank">developers.facebook.com</a> 로그인 → <strong>"내 앱" → "앱 만들기"</strong></div></div>
+          <div class="step-item"><div class="step-num" style="background:#BFDBFE;color:#1E40AF">2</div><div class="step-text">앱 대시보드에서 <strong>앱 ID</strong>와 <strong>앱 시크릿</strong> 확인</div></div>
+          <div class="step-item"><div class="step-num" style="background:#BFDBFE;color:#1E40AF">3</div><div class="step-text"><a href="https://developers.facebook.com/tools/explorer" target="_blank">Graph API Explorer</a>에서 액세스 토큰 발급 (<code>ads_management</code>, <code>ads_read</code> 권한 체크)</div></div>
+          <div class="step-item"><div class="step-num" style="background:#BFDBFE;color:#1E40AF">4</div><div class="step-text">광고 관리자 URL에서 광고 계정 ID 확인 (<code>act_</code>로 시작)</div></div>
+        </div>
+      </div>
+      <div class="field"><label>META_APP_ID <span class="hint">— 앱 ID (숫자)</span></label><input type="text" id="env_META_APP_ID" placeholder="예: 1234567890" oninput="markFilled(this)"/></div>
+      <div class="field"><label>META_APP_SECRET <span class="hint">— 앱 시크릿</span></label><input type="password" id="env_META_APP_SECRET" placeholder="예: abc123def456..." oninput="markFilled(this)"/></div>
+      <div class="field"><label>META_ACCESS_TOKEN <span class="hint">— 액세스 토큰 (긴 문자열)</span></label><input type="password" id="env_META_ACCESS_TOKEN" placeholder="EAAxxxxxxx..." oninput="markFilled(this)"/></div>
+      <div class="field"><label>META_AD_ACCOUNT_ID <span class="hint">— 광고 계정 ID</span></label><input type="text" id="env_META_AD_ACCOUNT_ID" placeholder="예: act_123456789" oninput="markFilled(this)"/></div>
+      <div class="field"><label>META_PIXEL_ID <span class="hint">— 픽셀 ID (선택)</span></label><input type="text" id="env_META_PIXEL_ID" placeholder="예: 9876543210" oninput="markFilled(this)"/></div>
+    </div>
+
+    <!-- GOOGLE -->
+    <div id="plt-google" class="hidden">
+      <div class="callout callout-amber" style="margin-bottom:16px">
+        <strong>Google Ads API 키 발급:</strong>
+        <div class="steps" style="margin-top:8px">
+          <div class="step-item"><div class="step-num" style="background:#FDE68A;color:#92400E">1</div><div class="step-text"><a href="https://ads.google.com" target="_blank">Google Ads</a> → 도구 → API 센터에서 <strong>개발자 토큰</strong> 신청</div></div>
+          <div class="step-item"><div class="step-num" style="background:#FDE68A;color:#92400E">2</div><div class="step-text"><a href="https://console.cloud.google.com" target="_blank">Cloud Console</a> → OAuth 2.0 클라이언트 만들기</div></div>
+          <div class="step-item"><div class="step-num" style="background:#FDE68A;color:#92400E">3</div><div class="step-text">OAuth Playground에서 <strong>Refresh Token</strong> 발급</div></div>
+          <div class="step-item"><div class="step-num" style="background:#FDE68A;color:#92400E">4</div><div class="step-text">Google Ads 상단의 고객 ID (<code>XXX-XXX-XXXX</code> 형식)</div></div>
+        </div>
+      </div>
+      <div class="field"><label>GOOGLE_ADS_CLIENT_ID <span class="hint">— OAuth 클라이언트 ID</span></label><input type="text" id="env_GOOGLE_ADS_CLIENT_ID" placeholder="예: 123456789-abc.apps.googleusercontent.com" oninput="markFilled(this)"/></div>
+      <div class="field"><label>GOOGLE_ADS_CLIENT_SECRET <span class="hint">— OAuth 시크릿</span></label><input type="password" id="env_GOOGLE_ADS_CLIENT_SECRET" placeholder="GOCSPX-xxxx" oninput="markFilled(this)"/></div>
+      <div class="field"><label>GOOGLE_ADS_DEVELOPER_TOKEN <span class="hint">— 개발자 토큰</span></label><input type="password" id="env_GOOGLE_ADS_DEVELOPER_TOKEN" placeholder="AbCdEfGhIjKlMnOp" oninput="markFilled(this)"/></div>
+      <div class="field"><label>GOOGLE_ADS_REFRESH_TOKEN <span class="hint">— Refresh 토큰</span></label><input type="password" id="env_GOOGLE_ADS_REFRESH_TOKEN" placeholder="1//0abc..." oninput="markFilled(this)"/></div>
+      <div class="field-row">
+        <div class="field"><label>GOOGLE_ADS_CUSTOMER_ID <span class="hint">— 고객 ID</span></label><input type="text" id="env_GOOGLE_ADS_CUSTOMER_ID" placeholder="123-456-7890" oninput="markFilled(this)"/></div>
+        <div class="field"><label>GOOGLE_ADS_LOGIN_CUSTOMER_ID <span class="hint">— 관리자 ID</span></label><input type="text" id="env_GOOGLE_ADS_LOGIN_CUSTOMER_ID" placeholder="123-456-7890" oninput="markFilled(this)"/></div>
+      </div>
+    </div>
+
+    <!-- TIKTOK -->
+    <div id="plt-tiktok" class="hidden">
+      <div class="callout callout-purple" style="margin-bottom:16px">
+        <strong>TikTok API 키 발급:</strong>
+        <div class="steps" style="margin-top:8px">
+          <div class="step-item"><div class="step-num" style="background:#DDD6FE;color:#5B21B6">1</div><div class="step-text"><a href="https://business-api.tiktok.com" target="_blank">business-api.tiktok.com</a> 로그인 → 앱 생성</div></div>
+          <div class="step-item"><div class="step-num" style="background:#DDD6FE;color:#5B21B6">2</div><div class="step-text">Marketing API 승인 후 <strong>Access Token</strong> 복사</div></div>
+          <div class="step-item"><div class="step-num" style="background:#DDD6FE;color:#5B21B6">3</div><div class="step-text">Ads Manager에서 <strong>Advertiser ID</strong> 확인</div></div>
+        </div>
+      </div>
+      <div class="field"><label>TIKTOK_ACCESS_TOKEN <span class="hint">— 액세스 토큰</span></label><input type="password" id="env_TIKTOK_ACCESS_TOKEN" placeholder="abc123..." oninput="markFilled(this)"/></div>
+      <div class="field"><label>TIKTOK_ADVERTISER_ID <span class="hint">— 광고주 ID</span></label><input type="text" id="env_TIKTOK_ADVERTISER_ID" placeholder="7012345678901234567" oninput="markFilled(this)"/></div>
+    </div>
+
+    <!-- NOTIFICATIONS -->
+    <div id="plt-noti" class="hidden">
+      <div class="callout callout-green" style="margin-bottom:16px"><strong>선택사항</strong>입니다. 나중에 추가해도 됩니다. 설정하면 ROAS 하락 등의 알림을 실시간으로 받습니다.</div>
+      <div class="field"><label>SLACK_WEBHOOK_URL <span class="hint">— Slack 웹훅</span></label><input type="text" id="env_SLACK_WEBHOOK_URL" placeholder="https://hooks.slack.com/services/..." oninput="markFilled(this)"/></div>
+      <div class="field"><label>TELEGRAM_BOT_TOKEN <span class="hint">— 텔레그램 봇 토큰</span></label><input type="text" id="env_TELEGRAM_BOT_TOKEN" placeholder="123456:ABC-DEF..." oninput="markFilled(this)"/></div>
+      <div class="field"><label>TELEGRAM_CHAT_ID <span class="hint">— 텔레그램 채팅방 ID</span></label><input type="text" id="env_TELEGRAM_CHAT_ID" placeholder="-1001234567890" oninput="markFilled(this)"/></div>
+    </div>
+
+    <!-- SERVER -->
+    <div id="plt-server" class="hidden">
+      <div class="callout callout-green" style="margin-bottom:16px"><strong>기본값 그대로 써도 됩니다.</strong> 특별히 변경할 이유가 없다면 건너뛰세요.</div>
+      <div class="field-row">
+        <div class="field"><label>API_PORT</label><input type="text" id="env_API_PORT" value="3099" oninput="markFilled(this)"/></div>
+        <div class="field"><label>DASHBOARD_PORT</label><input type="text" id="env_DASHBOARD_PORT" value="3100" oninput="markFilled(this)"/></div>
+      </div>
+      <div class="field"><label>COLLECT_INTERVAL_MINUTES <span class="hint">— 데이터 수집 주기 (분)</span></label><input type="text" id="env_COLLECT_INTERVAL_MINUTES" value="15" oninput="markFilled(this)"/></div>
+      <div class="field-row" style="grid-template-columns:1fr 1fr 1fr">
+        <div class="field"><label>ROAS 임계값</label><input type="text" id="env_ALERT_ROAS_THRESHOLD" value="1.5"/></div>
+        <div class="field"><label>CPA 임계값 (원)</label><input type="text" id="env_ALERT_CPA_THRESHOLD" value="50000"/></div>
+        <div class="field"><label>예산소진율 임계값</label><input type="text" id="env_ALERT_BUDGET_BURN_RATE" value="0.85"/></div>
+      </div>
+      <div class="field"><label>API_AUTH_TOKEN <span class="hint">— 비워두면 인증 없이 실행 (개발 모드)</span></label><input type="text" id="env_API_AUTH_TOKEN" placeholder="비워두면 개발 모드"/></div>
+    </div>
+
+    <div class="divider"></div>
+    <button class="btn btn-full" onclick="generateEnv()">📄 .env 파일 내용 자동 생성</button>
+
+    <div id="envResult" class="env-result">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-size:14px;font-weight:600;color:var(--gray-700)">.env 파일 내용</span>
+        <button class="btn btn-sm btn-copy" id="envCopyBtn" onclick="copyEnvAll()">전체 복사</button>
+      </div>
+      <div class="code"><pre id="envPreview" style="color:#86EFAC;font-size:12px"></pre></div>
+      <div class="callout callout-green" style="margin-top:12px">
+        <strong>📄 저장 방법:</strong> ① "전체 복사" 클릭 → ② 메모장/텍스트편집기에 붙여넣기 → ③ 프로젝트 폴더에 <strong><code>.env</code></strong> 이름으로 저장<br>
+        <span style="font-size:12px;opacity:0.8">※ Windows: 저장 시 "파일 형식"을 "모든 파일"로 변경 후 이름에 <code>.env</code> 입력</span>
+      </div>
+    </div>
+
+    <div class="check-item">
+      <input type="checkbox" data-step="2" onchange="updateNav()"/>
+      <span>.env 파일을 프로젝트 폴더에 저장했습니다</span>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== STEP 3: Setup ==================== -->
+<section id="sec-setup" class="section">
+  <div class="section-header">
+    <div class="section-num" style="background:var(--emerald-light);color:var(--emerald);">3</div>
+    <div><div class="section-title">초기 설정 실행</div><div class="section-desc">데이터베이스 생성 + 기본 템플릿 설치. 명령어 1줄!</div></div>
+  </div>
+
+  <div class="card">
+    <div class="code">
+      <div class="code-header"><span class="code-label">Terminal</span><button class="btn btn-sm btn-copy" onclick="doCopy(this,'npm run setup')">복사</button></div>
+      <pre><span class="prompt">$</span> npm run setup</pre>
+    </div>
+    <div class="callout callout-green" style="margin-top:12px">
+      <strong>이 명령이 하는 일:</strong> ✅ 데이터베이스 파일 생성 → ✅ 테이블 생성 → ✅ 광고 카피 템플릿 설치 → ✅ API 자격증명 검증
+    </div>
+    <p style="font-size:13px;font-weight:600;color:var(--gray-700);margin:16px 0 8px">성공하면 이런 메시지가 나옵니다:</p>
+    <div class="code">
+      <pre><span class="output">✅ .env file found
+✅ Database initialized
+✅ Default templates seeded
+✅ Meta credentials verified
+✅ Google credentials verified
+🎉 Setup complete! Run: npm run dev</span></pre>
+    </div>
+    <div class="check-item">
+      <input type="checkbox" data-step="3" onchange="updateNav()"/>
+      <span>npm run setup이 성공적으로 완료되었습니다</span>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== STEP 4: Run ==================== -->
+<section id="sec-run" class="section">
+  <div class="section-header">
+    <div class="section-num" style="background:var(--teal-light);color:var(--teal-dark);">4</div>
+    <div><div class="section-title">실행하기</div><div class="section-desc">캠페인을 가져오고, 서버를 시작합니다.</div></div>
+  </div>
+
+  <div class="card">
+    <div class="step-item">
+      <div class="step-num" style="background:var(--teal-light);color:var(--teal-dark)">1</div>
+      <div class="step-text">
+        <strong>캠페인 동기화</strong> (처음 한 번만 실행)
+        <div class="code" style="margin-top:6px">
+          <div class="code-header"><span class="code-label">Terminal</span><button class="btn btn-sm btn-copy" onclick="doCopy(this,'npm run sync-campaigns')">복사</button></div>
+          <pre><span class="prompt">$</span> npm run sync-campaigns</pre>
+        </div>
+      </div>
+    </div>
+    <div class="step-item">
+      <div class="step-num" style="background:var(--teal-light);color:var(--teal-dark)">2</div>
+      <div class="step-text">
+        <strong>서버 + 대시보드 실행</strong> (매일 사용하는 명령어)
+        <div class="code" style="margin-top:6px">
+          <div class="code-header"><span class="code-label">Terminal</span><button class="btn btn-sm btn-copy" onclick="doCopy(this,'npm run dev')">복사</button></div>
+          <pre><span class="prompt">$</span> npm run dev
+
+<span class="output">[API] Server running on port 3099
+[Dashboard] running on port 3100</span></pre>
+        </div>
+      </div>
+    </div>
+    <div class="step-item">
+      <div class="step-num" style="background:var(--teal-light);color:var(--teal-dark)">3</div>
+      <div class="step-text">
+        <strong>브라우저에서 대시보드 열기</strong>
+        <div style="text-align:center;margin:16px 0;padding:20px;background:linear-gradient(135deg,var(--teal-50),#E0F2FE);border-radius:16px;border:2px solid var(--teal)">
+          <p style="font-size:13px;color:var(--gray-600);margin-bottom:8px">브라우저 주소창에 입력하세요:</p>
+          <a href="http://localhost:3100" target="_blank" style="font-size:22px;font-weight:800;color:var(--teal-dark);text-decoration:none;letter-spacing:-0.02em">http://localhost:3100</a>
+          <p style="font-size:11px;color:var(--gray-400);margin-top:8px">클릭하거나, 주소창에 직접 입력해도 됩니다</p>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:linear-gradient(135deg,var(--emerald-light),#D1FAE5);border-radius:14px;padding:20px;margin-top:12px;display:flex;align-items:center;gap:16px">
+      <span style="font-size:36px">🎉</span>
+      <div>
+        <p style="font-size:16px;font-weight:800;color:#065F46">축하합니다!</p>
+        <p style="font-size:13px;color:#065F46">대시보드가 보이면 설치 완료입니다.</p>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <span style="background:white;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:600;color:var(--gray-600)">종료: <code>Ctrl+C</code></span>
+          <span style="background:white;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:600;color:var(--gray-600)">재시작: <code>npm run dev</code></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="check-item">
+      <input type="checkbox" data-step="4" onchange="updateNav()"/>
+      <span>대시보드가 정상적으로 열렸습니다</span>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== STEP 5: HOW TO USE ==================== -->
+<section id="sec-use" class="section">
+  <div class="section-header">
+    <div class="section-num" style="background:linear-gradient(135deg,var(--teal-light),#E0F2FE);color:var(--teal-dark);">5</div>
+    <div><div class="section-title">사용 방법</div><div class="section-desc">대시보드의 주요 기능과 채팅 사용법을 알아봅니다.</div></div>
+  </div>
+
+  <!-- 5-1: Dashboard Features -->
+  <div class="card">
+    <p style="font-size:16px;font-weight:700;margin-bottom:16px">📊 대시보드 주요 기능</p>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon" style="background:var(--blue-light)">📈</div>
+        <div class="feature-name">실시간 KPI</div>
+        <div class="feature-desc">총 지출, 전환수, ROAS, CPA, CTR을 한눈에 확인. 1일/7일/14일/30일 기간 선택 가능.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background:var(--amber-light)">📋</div>
+        <div class="feature-name">캠페인 관리</div>
+        <div class="feature-desc">활성 캠페인 목록, 예산/상태 확인, 일시정지/재개 버튼으로 즉시 제어.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background:var(--emerald-light)">📊</div>
+        <div class="feature-name">성과 차트</div>
+        <div class="feature-desc">지출 추이(면적 차트), ROAS 트렌드(라인 차트)를 시각적으로 분석.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background:var(--red-light)">🔔</div>
+        <div class="feature-name">알림</div>
+        <div class="feature-desc">ROAS 하락, CPA 초과, 예산 소진 경고를 색상별로 표시. Slack/Telegram 연동.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background:var(--purple-light)">🎨</div>
+        <div class="feature-name">콘텐츠 스튜디오</div>
+        <div class="feature-desc">크리에이티브 조합, 카피 템플릿, A/B 테스트 생성, 타겟 오디언스 관리.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background:var(--teal-light)">💬</div>
+        <div class="feature-name">채팅 (자연어)</div>
+        <div class="feature-desc">한국어/영어로 "성과 보여줘" 등 입력하면 AI가 자동 분석 후 결과 제공.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5-2: Chat Demo -->
+  <div class="card" style="margin-top:16px">
+    <p style="font-size:16px;font-weight:700;margin-bottom:4px">💬 채팅 사용법 — 직접 체험해보세요</p>
+    <p style="font-size:13px;color:var(--gray-500);margin-bottom:16px">아래 채팅창에 한국어로 입력해보세요. 대시보드에서도 똑같이 동작합니다.</p>
+
+    <div class="chat-demo" id="chatDemo">
+      <div class="chat-msg bot"><div class="chat-bubble">안녕하세요! 광고 관리 AI입니다. 무엇을 도와드릴까요? 예시 명령어를 클릭하거나 직접 입력해보세요.</div></div>
+    </div>
+    <div class="chat-input-area">
+      <input type="text" id="chatInput" placeholder="예: 성과 보여줘, 캠페인 목록, 최적화 추천..." onkeydown="if(event.key==='Enter')sendChat()"/>
+      <button onclick="sendChat()">전송</button>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
+      <button class="btn btn-sm btn-ghost" onclick="quickChat('성과 보여줘')">성과 보여줘</button>
+      <button class="btn btn-sm btn-ghost" onclick="quickChat('캠페인 목록')">캠페인 목록</button>
+      <button class="btn btn-sm btn-ghost" onclick="quickChat('예산 늘려줘')">예산 늘려줘</button>
+      <button class="btn btn-sm btn-ghost" onclick="quickChat('최적화 추천')">최적화 추천</button>
+      <button class="btn btn-sm btn-ghost" onclick="quickChat('캠페인 일시정지')">캠페인 일시정지</button>
+      <button class="btn btn-sm btn-ghost" onclick="quickChat('광고 만들어줘')">광고 만들어줘</button>
+      <button class="btn btn-sm btn-ghost" onclick="quickChat('AB 테스트')">AB 테스트</button>
+      <button class="btn btn-sm btn-ghost" onclick="quickChat('알림 확인')">알림 확인</button>
+    </div>
+  </div>
+
+  <!-- 5-3: Dashboard Layout Visual -->
+  <div class="card" style="margin-top:16px">
+    <p style="font-size:16px;font-weight:700;margin-bottom:12px">🖥️ 대시보드 화면 구성</p>
+    <div style="background:var(--gray-100);border-radius:12px;padding:16px;display:flex;gap:12px;font-size:11px;min-height:320px">
+      <!-- Sidebar Mock -->
+      <div style="width:160px;background:white;border-radius:10px;padding:12px;flex-shrink:0">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px">
+          <div style="width:20px;height:20px;border-radius:6px;background:var(--teal);display:flex;align-items:center;justify-content:center;color:white;font-size:8px;font-weight:800">A</div>
+          <span style="font-weight:700;font-size:10px">Ad Automation</span>
+        </div>
+        <div style="background:var(--gray-50);border-radius:6px;padding:6px 8px;font-size:9px;color:var(--gray-400);margin-bottom:12px">+ New Thread</div>
+        <p style="font-size:8px;color:var(--gray-400);font-weight:700;text-transform:uppercase;margin-bottom:4px">Recent</p>
+        <div style="color:var(--gray-400);font-size:9px;space-y:2px">
+          <div style="padding:3px 0">Meta ROAS 분석</div>
+          <div style="padding:3px 0">Google 예산 최적화</div>
+        </div>
+        <p style="font-size:8px;color:var(--gray-400);font-weight:700;text-transform:uppercase;margin:10px 0 4px">Content</p>
+        <div style="color:var(--gray-400);font-size:9px">
+          <div style="padding:3px 0">🎨 Creatives</div>
+          <div style="padding:3px 0">📝 Templates</div>
+          <div style="padding:3px 0">🧪 A/B Tests</div>
+          <div style="padding:3px 0">👥 Audiences</div>
+        </div>
+        <div style="margin-top:auto;padding-top:12px;display:flex;align-items:center;gap:4px;font-size:9px;color:var(--gray-400)">
+          <span style="width:6px;height:6px;border-radius:50%;background:var(--emerald)"></span> Connected
+        </div>
+      </div>
+
+      <!-- Main Area Mock -->
+      <div style="flex:1;display:flex;flex-direction:column;gap:8px">
+        <!-- Top bar -->
+        <div style="background:white;border-radius:8px;padding:8px 12px;display:flex;align-items:center;justify-content:space-between">
+          <span style="color:var(--gray-400)">☰</span>
+          <div style="display:flex;align-items:center;gap:4px">
+            <span style="width:6px;height:6px;border-radius:50%;background:var(--emerald)"></span>
+            <span style="font-size:9px;color:var(--gray-400)">Live</span>
+          </div>
+        </div>
+
+        <!-- KPI Cards -->
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px">
+          <div style="background:#EFF6FF;border-radius:8px;padding:8px"><p style="font-size:7px;color:var(--gray-400)">Spend</p><p style="font-size:11px;font-weight:700;color:var(--blue)">₩2.4M</p></div>
+          <div style="background:var(--emerald-light);border-radius:8px;padding:8px"><p style="font-size:7px;color:var(--gray-400)">Conv</p><p style="font-size:11px;font-weight:700;color:var(--emerald)">1,284</p></div>
+          <div style="background:var(--emerald-light);border-radius:8px;padding:8px"><p style="font-size:7px;color:var(--gray-400)">ROAS</p><p style="font-size:11px;font-weight:700;color:var(--emerald)">3.42</p></div>
+          <div style="background:var(--purple-light);border-radius:8px;padding:8px"><p style="font-size:7px;color:var(--gray-400)">CPA</p><p style="font-size:11px;font-weight:700;color:var(--purple)">₩1.9K</p></div>
+          <div style="background:var(--teal-50);border-radius:8px;padding:8px"><p style="font-size:7px;color:var(--gray-400)">CTR</p><p style="font-size:11px;font-weight:700;color:var(--teal)">2.31%</p></div>
+        </div>
+
+        <!-- Charts -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <div style="background:white;border-radius:8px;padding:10px;height:80px">
+            <p style="font-size:8px;color:var(--gray-400);margin-bottom:4px">Spend & Conversions</p>
+            <svg width="100%" height="45" viewBox="0 0 200 45"><defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3B82F6" stop-opacity="0.2"/><stop offset="100%" stop-color="#3B82F6" stop-opacity="0"/></linearGradient></defs><path d="M0,35 C30,25 50,38 80,20 C110,5 140,28 170,15 C185,10 200,18 200,18 L200,45 L0,45 Z" fill="url(#sg)"/><path d="M0,35 C30,25 50,38 80,20 C110,5 140,28 170,15 C185,10 200,18 200,18" fill="none" stroke="#3B82F6" stroke-width="2"/></svg>
+          </div>
+          <div style="background:white;border-radius:8px;padding:10px;height:80px">
+            <p style="font-size:8px;color:var(--gray-400);margin-bottom:4px">ROAS Trend</p>
+            <svg width="100%" height="45" viewBox="0 0 200 45"><path d="M0,30 C40,15 80,35 120,20 C160,5 180,22 200,12" fill="none" stroke="#14B8A6" stroke-width="2.5"/><circle cx="0" cy="30" r="3" fill="#14B8A6"/><circle cx="120" cy="20" r="3" fill="#14B8A6"/><circle cx="200" cy="12" r="3" fill="#14B8A6"/></svg>
+          </div>
+        </div>
+
+        <!-- Campaign rows -->
+        <div style="background:white;border-radius:8px;padding:8px 10px;font-size:9px;color:var(--gray-500)">
+          <div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--gray-100)"><span class="badge badge-meta" style="font-size:7px">Meta</span> 봄 프로모션 <span style="margin-left:auto">₩450K</span> <span style="color:var(--emerald)">●</span></div>
+          <div style="display:flex;align-items:center;gap:6px;padding:4px 0"><span class="badge badge-google" style="font-size:7px">Google</span> 브랜드 검색 <span style="margin-left:auto">₩320K</span> <span style="color:var(--emerald)">●</span></div>
+        </div>
+
+        <!-- Input bar -->
+        <div style="background:white;border-radius:8px;padding:8px 12px;display:flex;align-items:center;gap:6px;margin-top:auto">
+          <span style="color:var(--gray-300)">+</span>
+          <span style="flex:1;font-size:9px;color:var(--gray-300)">Ask about your ad performance...</span>
+          <span style="background:var(--gray-100);padding:2px 6px;border-radius:4px;font-size:7px;color:var(--gray-400)">Computer</span>
+          <span style="width:18px;height:18px;border-radius:6px;background:var(--teal);display:flex;align-items:center;justify-content:center;color:white;font-size:8px">↑</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5-4: API reference (collapsible) -->
+  <div class="card" style="margin-top:16px">
+    <p style="font-size:16px;font-weight:700;margin-bottom:12px">🔌 REST API 사용법 (고급)</p>
+    <p style="font-size:13px;color:var(--gray-500);margin-bottom:12px">대시보드 외에도 API를 직접 호출할 수 있습니다. 개발자용이므로 일반 사용자는 건너뛰어도 됩니다.</p>
+
+    <div class="accordion">
+      <button class="accordion-trigger" onclick="toggleAccordion(this)">
+        GET /api/overview — KPI 요약 조회
+        <svg class="accordion-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="accordion-body"><div class="accordion-body-inner">
+        <div class="code"><pre><span class="prompt">$</span> curl http://localhost:3099/api/overview?days=7</pre></div>
+        <p style="margin-top:8px">기간별(1/7/14/30일) 총 지출, 전환수, ROAS, CPA, CTR, 플랫폼별 비교 데이터를 반환합니다.</p>
+      </div></div>
+    </div>
+    <div class="accordion">
+      <button class="accordion-trigger" onclick="toggleAccordion(this)">
+        GET /api/campaigns — 캠페인 목록
+        <svg class="accordion-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="accordion-body"><div class="accordion-body-inner">
+        <div class="code"><pre><span class="prompt">$</span> curl http://localhost:3099/api/campaigns</pre></div>
+        <p style="margin-top:8px">모든 캠페인의 이름, 상태, 예산, 오늘 지출/전환, 주간 ROAS 등을 반환합니다.</p>
+      </div></div>
+    </div>
+    <div class="accordion">
+      <button class="accordion-trigger" onclick="toggleAccordion(this)">
+        POST /api/campaigns/:id/budget — 예산 변경
+        <svg class="accordion-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="accordion-body"><div class="accordion-body-inner">
+        <div class="code"><pre><span class="prompt">$</span> curl -X POST http://localhost:3099/api/campaigns/1/budget \
+  -H "Content-Type: application/json" \
+  -d '{"daily_budget": 100000}'</pre></div>
+        <p style="margin-top:8px">특정 캠페인의 일일 예산을 변경합니다. WebSocket으로 실시간 반영됩니다.</p>
+      </div></div>
+    </div>
+    <div class="accordion">
+      <button class="accordion-trigger" onclick="toggleAccordion(this)">
+        POST /api/campaigns/:id/status — 상태 변경
+        <svg class="accordion-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="accordion-body"><div class="accordion-body-inner">
+        <div class="code"><pre><span class="prompt">$</span> curl -X POST http://localhost:3099/api/campaigns/1/status \
+  -H "Content-Type: application/json" \
+  -d '{"status": "PAUSED"}'</pre></div>
+        <p style="margin-top:8px">가능한 상태: ACTIVE, PAUSED, ENABLED, DRAFT</p>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="check-item">
+    <input type="checkbox" data-step="5" onchange="updateNav()"/>
+    <span>사용 방법을 이해했습니다</span>
+  </div>
+</section>
+
+<!-- ==================== COMMAND REFERENCE ==================== -->
+<section class="section">
+  <div class="section-header">
+    <div class="section-num" style="background:var(--gray-100);color:var(--gray-600);">⌘</div>
+    <div><div class="section-title">명령어 모음</div><div class="section-desc">자주 사용하는 터미널 명령어 한눈에 보기</div></div>
+  </div>
+  <div class="card">
+    <table class="cmd-table">
+      <tr><td><span class="cmd-code">npm install</span></td><td>패키지 설치 (처음 1회)</td><td style="text-align:right"><button class="btn btn-sm btn-copy" onclick="doCopy(this,'npm install')">복사</button></td></tr>
+      <tr><td><span class="cmd-code">npm run setup</span></td><td>DB + 템플릿 초기화 (처음 1회)</td><td style="text-align:right"><button class="btn btn-sm btn-copy" onclick="doCopy(this,'npm run setup')">복사</button></td></tr>
+      <tr><td><span class="cmd-code">npm run sync-campaigns</span></td><td>캠페인 가져오기</td><td style="text-align:right"><button class="btn btn-sm btn-copy" onclick="doCopy(this,'npm run sync-campaigns')">복사</button></td></tr>
+      <tr class="cmd-highlight"><td><span class="cmd-code">npm run dev</span></td><td style="font-weight:700;color:var(--teal-dark)">서버+대시보드 실행 (매일 사용)</td><td style="text-align:right"><button class="btn btn-sm btn-primary" onclick="doCopy(this,'npm run dev')">복사</button></td></tr>
+      <tr><td><span class="cmd-code">npm run server</span></td><td>API 서버만 실행</td><td style="text-align:right"><button class="btn btn-sm btn-copy" onclick="doCopy(this,'npm run server')">복사</button></td></tr>
+      <tr><td><span class="cmd-code">npm run collect</span></td><td>수동 데이터 수집</td><td style="text-align:right"><button class="btn btn-sm btn-copy" onclick="doCopy(this,'npm run collect')">복사</button></td></tr>
+      <tr><td><span class="cmd-code">npm test</span></td><td>전체 테스트 (94개)</td><td style="text-align:right"><button class="btn btn-sm btn-copy" onclick="doCopy(this,'npm test')">복사</button></td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- ==================== FAQ ==================== -->
+<section id="faq" class="section">
+  <div class="section-header">
+    <div class="section-num" style="background:var(--gray-100);color:var(--gray-600);">?</div>
+    <div><div class="section-title">자주 묻는 질문</div></div>
+  </div>
+
+  <div class="accordion"><button class="accordion-trigger" onclick="toggleAccordion(this)">npm install에서 에러가 나요<svg class="accordion-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></button><div class="accordion-body"><div class="accordion-body-inner"><code>node -v</code>로 v22 이상인지 확인 → 프로젝트 폴더 안인지 확인 → <code>rm -rf node_modules && npm install</code> 재시도</div></div></div>
+  <div class="accordion"><button class="accordion-trigger" onclick="toggleAccordion(this)">localhost:3100이 안 열려요<svg class="accordion-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></button><div class="accordion-body"><div class="accordion-body-inner"><code>npm run dev</code> 터미널이 열려있는지 확인 → 포트 충돌 시 .env에서 DASHBOARD_PORT를 3200으로 변경 → <code>http://</code> 포함해서 주소 입력</div></div></div>
+  <div class="accordion"><button class="accordion-trigger" onclick="toggleAccordion(this)">API 키를 나중에 변경하고 싶어요<svg class="accordion-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></button><div class="accordion-body"><div class="accordion-body-inner">.env 파일을 텍스트 편집기로 열어 수정 → 서버 재시작 (<code>Ctrl+C</code> 후 <code>npm run dev</code>)</div></div></div>
+  <div class="accordion"><button class="accordion-trigger" onclick="toggleAccordion(this)">한 플랫폼만 쓰고 싶어요 (예: Meta만)<svg class="accordion-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></button><div class="accordion-body"><div class="accordion-body-inner">사용하려는 플랫폼 키만 .env에 입력하면 됩니다. 나머지는 비워두세요. 프레임워크가 자동으로 인식합니다.</div></div></div>
+  <div class="accordion"><button class="accordion-trigger" onclick="toggleAccordion(this)">.env 파일이 안 보여요 (숨김 파일)<svg class="accordion-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></button><div class="accordion-body"><div class="accordion-body-inner">Mac: Finder에서 <code>Cmd+Shift+.</code> 누르기 / Windows: 파일 탐색기 → 보기 → "숨긴 항목" 체크</div></div></div>
+  <div class="accordion"><button class="accordion-trigger" onclick="toggleAccordion(this)">데이터는 얼마나 자주 수집되나요?<svg class="accordion-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></button><div class="accordion-body"><div class="accordion-body-inner">기본 15분 간격으로 자동 수집됩니다. .env의 <code>COLLECT_INTERVAL_MINUTES</code> 값을 변경하면 주기를 조절할 수 있습니다. 수동 수집은 <code>npm run collect</code>.</div></div></div>
+</section>
+
+</div><!-- /container -->
+
+<!-- ========== FOOTER ========== -->
+<footer style="background:var(--gray-900);color:var(--gray-500);padding:32px;text-align:center;font-size:12px">
+  <p>Ad Automation Framework — Interactive Setup &amp; Usage Guide</p>
+  <p style="color:var(--gray-600);margin-top:4px">이 파일은 인터넷 없이도 작동합니다 (외부 CDN 없음)</p>
+</footer>
+
+<!-- ========== JS ========== -->
+<script>
+/* ── Tab Switching ── */
+function showTab(group, btn, id) {
+  btn.parentElement.querySelectorAll('.btn-ghost').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll(`[id^="${group}-"]`).forEach(el => el.classList.add('hidden'));
+  const target = document.getElementById(group + '-' + id);
+  if (target) target.classList.remove('hidden');
+}
+
+/* ── Copy ── */
+function doCopy(btn, text) {
+  navigator.clipboard.writeText(text).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '복사됨!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 2000);
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+    btn.textContent = '복사됨!'; btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = '복사'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+
+/* ── Filled Fields ── */
+function markFilled(input) { input.classList.toggle('filled', !!input.value.trim()); }
+
+/* ── Generate .env ── */
+function generateEnv() {
+  const keys = [
+    {s:'# ---- Meta (Facebook) Marketing API ----'},
+    {k:'META_APP_ID'},{k:'META_APP_SECRET'},{k:'META_ACCESS_TOKEN'},{k:'META_AD_ACCOUNT_ID'},{k:'META_PIXEL_ID'},
+    {s:'\n# ---- Google Ads API ----'},
+    {k:'GOOGLE_ADS_CLIENT_ID'},{k:'GOOGLE_ADS_CLIENT_SECRET'},{k:'GOOGLE_ADS_DEVELOPER_TOKEN'},{k:'GOOGLE_ADS_REFRESH_TOKEN'},{k:'GOOGLE_ADS_CUSTOMER_ID'},{k:'GOOGLE_ADS_LOGIN_CUSTOMER_ID'},
+    {s:'\n# ---- TikTok Ads API ----'},
+    {k:'TIKTOK_ACCESS_TOKEN'},{k:'TIKTOK_ADVERTISER_ID'},
+    {s:'\n# ---- Notifications ----'},
+    {k:'SLACK_WEBHOOK_URL'},{k:'TELEGRAM_BOT_TOKEN'},{k:'TELEGRAM_CHAT_ID'},
+    {s:'\n# ---- OpenClaw Gateway ----'},
+    {h:'OPENCLAW_GATEWAY=ws://127.0.0.1:18789'},{h:'OPENCLAW_WORKSPACE=ad-automation'},
+    {s:'\n# ---- Server ----'},
+    {k:'API_PORT',d:'3099'},{k:'DASHBOARD_PORT',d:'3100'},{h:'DB_PATH=./data/ads.db'},{k:'COLLECT_INTERVAL_MINUTES',d:'15'},
+    {s:'\n# ---- Alert Thresholds ----'},
+    {k:'ALERT_ROAS_THRESHOLD',d:'1.5'},{k:'ALERT_CPA_THRESHOLD',d:'50000'},{k:'ALERT_BUDGET_BURN_RATE',d:'0.85'},
+    {s:'\n# ---- Authentication ----'},
+    {k:'API_AUTH_TOKEN'},
+  ];
+  let out = '# Ad Automation Framework — .env\n';
+  keys.forEach(item => {
+    if (item.s) { out += item.s + '\n'; return; }
+    if (item.h) { out += item.h + '\n'; return; }
+    const el = document.getElementById('env_' + item.k);
+    out += `${item.k}=${el ? el.value.trim() || item.d || '' : item.d || ''}\n`;
+  });
+  document.getElementById('envPreview').textContent = out;
+  document.getElementById('envResult').classList.add('show');
+  document.getElementById('envResult').scrollIntoView({ behavior:'smooth', block:'center' });
+}
+
+function copyEnvAll() {
+  const text = document.getElementById('envPreview').textContent;
+  doCopy(document.getElementById('envCopyBtn'), text);
+}
+
+/* ── Accordion ── */
+function toggleAccordion(btn) {
+  const body = btn.nextElementSibling;
+  const arrow = btn.querySelector('.accordion-arrow');
+  body.classList.toggle('open');
+  arrow.style.transform = body.classList.contains('open') ? 'rotate(180deg)' : '';
+}
+
+/* ── Nav Progress ── */
+function updateNav() {
+  document.querySelectorAll('.nav-dot').forEach(dot => {
+    const step = dot.dataset.step;
+    const cb = document.querySelector(`input[data-step="${step}"]`);
+    if (cb && cb.checked) { dot.classList.add('done'); dot.classList.remove('active'); }
+    else { dot.classList.remove('done'); }
+  });
+}
+
+/* ── Chat Demo ── */
+const chatResponses = {
+  '성과 보여줘': '📊 <b>최근 7일 성과 요약</b><br><br>• 총 지출: ₩2,430,000<br>• 전환수: 1,284건<br>• ROAS: 3.42 (목표 1.5 대비 +228%)<br>• CPA: ₩1,892<br>• CTR: 2.31%<br><br>Meta 캠페인 ROAS가 Google 대비 15% 높습니다.',
+  '캠페인 목록': '📋 <b>활성 캠페인 3개</b><br><br>1. <span style="color:var(--blue)">[Meta]</span> 봄 프로모션 — ₩450K/500K (ROAS 3.42)<br>2. <span style="color:var(--amber-dark)">[Google]</span> 브랜드 검색 — ₩320K/400K (ROAS 5.12)<br>3. <span style="color:var(--amber-dark)">[Google]</span> 디스플레이 리마케팅 — ₩180K/200K (ROAS 1.23) ⚠️',
+  '예산 늘려줘': '💰 어느 캠페인의 예산을 변경할까요?<br><br>1. 봄 프로모션 (현재 ₩500,000/일)<br>2. 브랜드 검색 (현재 ₩400,000/일)<br>3. 디스플레이 리마케팅 (현재 ₩200,000/일)<br><br>예: "봄 프로모션 예산 70만원으로"',
+  '최적화 추천': '🎯 <b>예산 재배분 추천</b><br><br>현재 총 예산: ₩1,100,000/일<br><br>✅ 브랜드 검색 (ROAS 5.12): ₩400K → <b>₩500K (+25%)</b><br>✅ 봄 프로모션 (ROAS 3.42): ₩500K → <b>₩480K (-4%)</b><br>⚠️ 디스플레이 리마케팅 (ROAS 1.23): ₩200K → <b>₩120K (-40%)</b><br><br>예상 효과: 전체 ROAS 3.42 → 4.1 (+20%)',
+  '캠페인 일시정지': '⏸️ 어느 캠페인을 일시정지할까요?<br><br>1. 봄 프로모션 (ACTIVE)<br>2. 브랜드 검색 (ACTIVE)<br>3. 디스플레이 리마케팅 (ACTIVE)<br><br>예: "디스플레이 리마케팅 일시정지"',
+  '광고 만들어줘': '🎨 <b>크리에이티브 파이프라인</b> 시작!<br><br>1. 플랫폼 선택: Meta / Google / TikTok<br>2. 템플릿 선택 또는 직접 작성<br>3. 변수 입력 (브랜드명, 할인율 등)<br>4. 미리보기 → 등록<br><br>예: "Meta 프로모션 템플릿으로 광고 만들어줘"',
+  'ab 테스트': '🧪 <b>A/B 테스트</b> 관리<br><br>현재 진행 중: 없음<br><br>새 테스트 만들기:<br>1. 캠페인 선택<br>2. 변형(Variant) 2~5개 설정<br>3. 최소 노출수 설정 (기본 1,000)<br>4. 통계적 유의성(95%) 달성 시 자동 판정<br><br>예: "봄 프로모션으로 A/B 테스트 만들어줘"',
+  '알림 확인': '🔔 <b>최근 알림 3건</b><br><br>🔴 디스플레이 리마케팅 ROAS 1.23 — 임계값(1.5) 미달<br>🟡 봄 프로모션 예산 소진율 87% — 임계값(85%) 초과<br>🔵 주간 성과 리포트 생성 완료',
+};
+
+function sendChat() {
+  const input = document.getElementById('chatInput');
+  const text = input.value.trim();
+  if (!text) return;
+  addChatMsg('user', text);
+  input.value = '';
+
+  setTimeout(() => {
+    const key = Object.keys(chatResponses).find(k => text.toLowerCase().includes(k.toLowerCase()));
+    const reply = key ? chatResponses[key] : '해당 명령을 처리할 수 있습니다. 실제 대시보드(<code>http://localhost:3100</code>)에서 동일하게 입력해보세요!';
+    addChatMsg('bot', reply);
+  }, 600);
+}
+
+function quickChat(text) {
+  document.getElementById('chatInput').value = text;
+  sendChat();
+}
+
+function addChatMsg(role, html) {
+  const demo = document.getElementById('chatDemo');
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + role;
+  div.innerHTML = `<div class="chat-bubble">${html}</div>`;
+  demo.appendChild(div);
+  demo.scrollTop = demo.scrollHeight;
+}
+
+/* ── Auto-detect OS ── */
+(function() {
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes('mac')) {
+    document.querySelector('[onclick*="showTab(\'os\'"]')?.click();
+  } else if (ua.includes('win')) {
+    document.querySelectorAll('[onclick*="showTab(\'os\'"]')[1]?.click();
+  } else {
+    document.querySelectorAll('[onclick*="showTab(\'os\'"]')[2]?.click();
+  }
+})();
+</script>
+</body>
+</html>

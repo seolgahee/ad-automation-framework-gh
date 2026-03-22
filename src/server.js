@@ -427,6 +427,12 @@ app.post('/api/creatives/pipeline', async (req, res) => {
   }
 });
 
+/** GET /api/creatives/diversity — P.D.A semantic diversity check for a campaign */
+app.get('/api/creatives/diversity', (req, res) => {
+  const creatives = creativePipeline.getCreatives({ campaignId: req.query.campaignId });
+  res.json(creativePipeline.checkSemanticDiversity(creatives));
+});
+
 // --- A/B Tests ---
 
 /** GET /api/ab-tests — List all A/B tests */

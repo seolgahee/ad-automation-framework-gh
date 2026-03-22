@@ -1,7 +1,7 @@
 # Ad Automation Framework — 프로젝트 정리
 
 **최초 작성일**: 2026-03-18
-**최종 수정일**: 2026-03-20
+**최종 수정일**: 2026-03-22
 
 ## 프로젝트 개요
 
@@ -272,6 +272,50 @@ npm run dev
 
 ---
 
+## 2026-03-22 작업 내역
+
+### Creatives 갤러리 디벨롭 (Date Picker + 캠페인/광고그룹 필터)
+
+- [x] **기간 선택 — Date Picker 교체** (`src/dashboard/index.html`)
+  - 기존 일수 버튼(1일/7일/14일/30일/전체) 제거
+  - Overview 패널과 동일한 시작일~종료일 Date Picker 추가
+  - 퀵셀렉트 버튼(7일/14일/30일) 병행 — 클릭 시 자동 날짜 계산
+  - `adPerfDays` state → `adPerfDateRange { since, until }` state로 변경
+  - API 호출: `days=N` → `since=YYYY-MM-DD&until=YYYY-MM-DD` 파라미터로 전환
+
+- [x] **캠페인/광고그룹 Cascading 필터 추가** (`src/server.js`, `src/dashboard/index.html`)
+  - **신규 API**: `GET /api/ad-performance/filters?platform=&campaign_id=`
+    - 응답: `{ campaigns: [{campaign_id, campaign_name}], adsets: [{adset_id, adset_name, campaign_id}] }`
+    - `campaign_id` 전달 시 해당 캠페인의 adset만 반환 (cascading)
+  - **기존 API 확장**: `/api/ad-performance`, `/api/ad-performance/summary`에 `campaign_id`, `adset_id` 쿼리 파라미터 추가
+  - **UI**: 필터바에 캠페인/광고그룹 `<select>` 드롭다운 2개 추가
+    - 캠페인 변경 → 광고그룹 초기화 + 필터 옵션 리페치
+    - 플랫폼 변경 → 캠페인 + 광고그룹 모두 초기화
+
+- [x] **semantic diversity 엔드포인트 추가** (`src/server.js`)
+  - `GET /api/creatives/diversity?campaignId=` — P.D.A 의미론적 다양성 체크
+
+### Remote 코드 Merge 및 Creative Upload 복원
+
+- [x] **remote `origin/main`과 merge** — 15개 충돌 파일 해결
+  - 로컬 우선 (Google API 연동, safeError, 환경검증 등 최신 코드 유지)
+  - remote에만 있던 코드 수동 복원:
+    - Creative Upload 탭 전체 (PDA 태그 포함)
+    - `upload` 아이콘, upload state 변수, `PDA_OPTIONS` 객체
+    - `handleCreativeUpload` 함수
+    - `awareness_stage` 뱃지 (creative 카드)
+    - `creatives/diversity` 엔드포인트
+
+- [x] **사이드바 Content 메뉴 네비게이션 수정**
+  - 문제: Templates/A/B Tests/Audiences/Creative Upload 클릭 시 `contentTab`만 변경되고 `activeView`가 변경되지 않아 화면 전환 안 됨
+  - 수정: 모든 Content 메뉴에 `setActiveView('dashboard')` 추가
+  - Creative Upload 탭: `scrollIntoView` 자동 스크롤 추가 (DashboardPanel 하단에 위치하므로)
+
+### 테스트 결과
+- 94개 테스트 전체 통과 (모든 변경 후 확인)
+
+---
+
 ## 기술 노트
 
 ### 챗봇 의도 분류기 (TF-IDF) 한계 및 확장 방안
@@ -329,7 +373,7 @@ GROUP BY platform;
 - [x] `ad_performance` 테이블 스키마 점검 완료 — UNIQUE/CHECK/인덱스/ON CONFLICT 수정 + 마이그레이션 로직
 - [x] 크리에이티브 관리 대시보드 UI 구현 — 소재 성과 갤러리 (Creatives 뷰)
 - [ ] 소재(Ad) 레벨 **과거 데이터 백필** 점검 — 현재 3/18~3/19만 수집됨. `collect-historical.js`에 ad-level 백필 지원 추가 또는 별도 스크립트 필요
-- [ ] 소재 성과 갤러리 **달력(Date Picker) 기간 선택** 구현 — 현재 1일/7일/14일/30일 버튼만 있음. Overview처럼 시작일~종료일 달력으로 자유 기간 선택 기능 추가
+- [x] 소재 성과 갤러리 **달력(Date Picker) 기간 선택** 구현 — 퀵셀렉트(7/14/30일) + 시작일~종료일 달력 + 캠페인/광고그룹 cascading 필터 추가 완료
 - [ ] 소재 이미지 URL 별도 수집 필요 — `ad_performance`와 `ads` 테이블 모두 이미지 URL 미보유. Meta Ad Creative API(`/act_{ad_account_id}/adcreatives`)에서 `image_url`, `thumbnail_url` 등을 수집하는 로직 신규 구현 필요
 - [ ] ads/ad_groups FK 연결 보류 — 비정규화 설계 유지 (성과 조회는 `ad_performance` 단독으로 충분)
 - [x] 소재(Ad) 레벨 데이터 수집 — Meta `getAdInsights` + Google `getAdInsights` (ad_group_ad + PMAX asset_group 병행) 구현 완료

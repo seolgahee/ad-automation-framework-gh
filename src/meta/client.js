@@ -82,6 +82,90 @@ export class MetaAdsClient extends BaseAdsClient {
 
   // ─── Ad Set Management ─────────────────────────────────────
 
+  /** List Meta Pixels for this ad account */
+  async getPixels() {
+    this._ensureConfigured();
+    const res = await this._withTimeout(
+      this.api.call('GET', [this.accountId, 'adspixels'], { fields: 'id,name', limit: 50 }),
+      'getPixels'
+    );
+    logger.info(`Fetched ${res?.data?.length || 0} Meta pixels`);
+    return res?.data || [];
+  }
+
+  /** List Instagram accounts connected to this business */
+  async getInstagramAccounts() {
+    this._ensureConfigured();
+    try {
+      const acct = await this._withTimeout(
+        this.api.call('GET', [this.accountId], { fields: 'business' }),
+        'getInstagramAccounts_biz'
+      );
+      const bizId = acct?.business?.id;
+      if (!bizId) return [];
+      const res = await this._withTimeout(
+        this.api.call('GET', [bizId, 'instagram_accounts'], { fields: 'id,username,name', limit: 50 }),
+        'getInstagramAccounts'
+      );
+      logger.info(`Fetched ${res?.data?.length || 0} Instagram accounts`);
+      return res?.data || [];
+    } catch (e) {
+      logger.warn('Failed to fetch Instagram accounts', { error: e.message });
+      return [];
+    }
+  }
+
+  /** List Facebook Pages connected to this ad account */
+  async getPages() {
+    this._ensureConfigured();
+    const fields = 'id,name,category';
+
+    // 1) 개인 유저 토큰: me/accounts
+    try {
+      const res = await this._withTimeout(
+        this.api.call('GET', ['me', 'accounts'], { fields, limit: 50 }),
+        'getPages_me'
+      );
+      if (res?.data?.length) {
+        logger.info(`Fetched ${res.data.length} Facebook pages via me/accounts`);
+        return res.data;
+      }
+    } catch (_) { /* fall through */ }
+
+    // 2) 시스템 유저 토큰: 광고 계정 → 비즈니스 → owned_pages
+    try {
+      const acctRes = await this._withTimeout(
+        this.api.call('GET', [this.accountId], { fields: 'business' }),
+        'getPages_business'
+      );
+      const businessId = acctRes?.business?.id;
+      if (businessId) {
+        const pagesRes = await this._withTimeout(
+          this.api.call('GET', [businessId, 'owned_pages'], { fields, limit: 50 }),
+          'getPages_owned'
+        );
+        if (pagesRes?.data?.length) {
+          logger.info(`Fetched ${pagesRes.data.length} Facebook pages via business owned_pages`);
+          return pagesRes.data;
+        }
+      }
+    } catch (_) { /* fall through */ }
+
+    logger.warn('Could not fetch Facebook pages via any method');
+    return [];
+  }
+
+  /** List ad sets for a given campaign */
+  async getAdSets(campaignId) {
+    this._ensureConfigured();
+    const campaign = new bizSdk.Campaign(campaignId);
+    const fields = ['id', 'name', 'status', 'daily_budget', 'optimization_goal', 'billing_event'];
+    const params = { effective_status: ['ACTIVE', 'PAUSED'] };
+    const adSets = await this._withTimeout(campaign.getAdSets(fields, params), 'getAdSets');
+    logger.info(`Fetched ${adSets.length} ad sets for campaign ${campaignId}`);
+    return adSets.map(a => a._data);
+  }
+
   /** Create an ad set with targeting */
   async createAdSet({
     campaignId, name, dailyBudget, billingEvent = 'IMPRESSIONS',
@@ -121,19 +205,24 @@ export class MetaAdsClient extends BaseAdsClient {
   // ─── Ad Creative & Ads ─────────────────────────────────────
 
   /** Create ad creative */
-  async createCreative({ name, pageId, message, link, imageHash, callToAction = 'LEARN_MORE' }) {
+  async createCreative({ name, pageId, instagramAccountId, message, headline, description, link, imageHash, imageUrl, callToAction = 'LEARN_MORE' }) {
     this._ensureConfigured();
+    const linkData = {
+      message,
+      link,
+      call_to_action: { type: callToAction },
+    };
+    if (headline)    linkData.name        = headline;
+    if (description) linkData.description = description;
+    if (imageHash)   linkData.image_hash  = imageHash;
+    else if (imageUrl) linkData.picture   = imageUrl;
+
+    const storySpec = { page_id: pageId, link_data: linkData };
+    if (instagramAccountId) storySpec.instagram_user_id = instagramAccountId;
+
     const params = {
       name,
-      object_story_spec: {
-        page_id: pageId,
-        link_data: {
-          message,
-          link,
-          image_hash: imageHash,
-          call_to_action: { type: callToAction },
-        },
-      },
+      object_story_spec: storySpec,
     };
 
     const result = await this._withTimeout(this.account.createAdCreative([], params), 'createCreative');
@@ -142,7 +231,7 @@ export class MetaAdsClient extends BaseAdsClient {
   }
 
   /** Create an ad linking creative to ad set */
-  async createAd({ adSetId, creativeId, name, status = 'PAUSED' }) {
+  async createAd({ adSetId, creativeId, name, status = 'PAUSED', pixelId = null, conversionEvent = null }) {
     this._ensureConfigured();
     const params = {
       name,
@@ -150,6 +239,11 @@ export class MetaAdsClient extends BaseAdsClient {
       creative: { creative_id: creativeId },
       status,
     };
+    if (pixelId) {
+      const spec = { 'action.type': ['offsite_conversion'], 'fb_pixel': [pixelId] };
+      if (conversionEvent) spec['custom_event_type'] = [conversionEvent];
+      params.tracking_specs = [spec];
+    }
 
     const result = await this._withTimeout(this.account.createAd([], params), 'createAd');
     logger.info('Meta ad created', { id: result.id, name });

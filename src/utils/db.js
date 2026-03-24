@@ -221,6 +221,37 @@ export function initDatabase() {
 
     -- Unique constraint for dedup in collector (prevents duplicate rows per collection cycle)
     CREATE UNIQUE INDEX IF NOT EXISTS idx_perf_dedup ON performance(campaign_id, platform, date_start);
+
+    -- Creative assets (registered via Meta API or templates)
+    CREATE TABLE IF NOT EXISTS creatives (
+      id               TEXT PRIMARY KEY,
+      platform         TEXT NOT NULL,
+      platform_id      TEXT,
+      campaign_id      TEXT,
+      ad_set_id        TEXT,
+      name             TEXT NOT NULL,
+      type             TEXT DEFAULT 'image',
+      status           TEXT DEFAULT 'DRAFT',
+      headline         TEXT,
+      description      TEXT,
+      body_text        TEXT,
+      cta              TEXT,
+      media_url        TEXT,
+      landing_url      TEXT,
+      ab_group         TEXT,
+      metadata_json    TEXT,
+      created_at       TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_creatives_platform ON creatives(platform, created_at);
+    CREATE INDEX IF NOT EXISTS idx_creatives_campaign ON creatives(campaign_id);
+
+    CREATE TABLE IF NOT EXISTS meta_pages (
+      id        TEXT PRIMARY KEY,
+      name      TEXT NOT NULL,
+      memo      TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   logger.info('Database initialized', { path: DB_PATH });

@@ -15,7 +15,20 @@ import db, { initDatabase } from './utils/db.js';
 import logger from './utils/logger.js';
 import DataCollector from './analytics/collector.js';
 import { getOptimizer, getPipeline, getTemplateEngine, getABTestEngine, getAudienceManager } from './utils/services.js';
+import { getMetaClient } from './utils/clients.js';
+import crypto from 'crypto';
 import { getAdapter } from './utils/platform-adapter.js';
+import multer from 'multer';
+import fs from 'fs';
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 30 * 1024 * 1024 }, // 30MB
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('이미지 파일만 업로드 가능합니다'));
+  },
+});
 
 // ─── Startup Environment Validation ─────────────────────────────
 function validateEnv() {
@@ -85,10 +98,13 @@ const rateLimitCleanupInterval = setInterval(() => {
 }, 60000);
 
 // Stricter rate limit on mutation endpoints
-const mutationLimiter = rateLimit({ windowMs: 60000, max: 20 });
-const readLimiter = rateLimit({ windowMs: 60000, max: 120 });
+const mutationLimiter = rateLimit({ windowMs: 60000, max: 60 });
+const readLimiter    = rateLimit({ windowMs: 60000, max: 120 });
 app.get('/api/*', readLimiter);
-app.post('/api/*', mutationLimiter);
+app.post('/api/*', (req, res, next) => {
+  if (req.originalUrl.includes('/meta/upload-image')) return next(); // 이미지 업로드는 rate limit 제외
+  mutationLimiter(req, res, next);
+});
 
 // ─── HIGH #9: Input Validation Helpers ──────────────────────────
 const ALLOWED_PLATFORMS = ['meta', 'google', 'tiktok'];
@@ -113,8 +129,23 @@ function validateRequired(body, fields) {
 
 // ─── Safe Error Response Helper ─────────────────────────────────
 function safeError(res, err, context = 'operation') {
-  logger.error(`${context} failed`, { error: err.message, stack: err.stack });
-  res.status(500).json({ error: `${context} 처리 중 오류가 발생했습니다.` });
+  // FacebookRequestError: err.response = parsed error body from Meta API
+  const metaBody = err?.response && typeof err.response === 'object' ? err.response : {};
+  const detail = metaBody.message || err?.message || String(err);
+  const code = metaBody.code || metaBody.error_subcode || err?.status || null;
+  const errorType = metaBody.type || null;
+  const traceId = metaBody.fbtrace_id || null;
+
+  logger.error(`${context} failed`, {
+    error: detail, code, errorType, traceId,
+    metaBody: JSON.stringify(metaBody),
+    stack: err.stack,
+  });
+
+  let msg = detail;
+  if (code) msg = `[code ${code}] ${msg}`;
+  if (errorType) msg = `${msg} (${errorType})`;
+  res.status(500).json({ error: msg });
 }
 
 // ─── WebSocket: broadcast + heartbeat (#13 WS cleanup) ──────────
@@ -424,6 +455,166 @@ app.post('/api/creatives/pipeline', async (req, res) => {
     res.json(result);
   } catch (e) {
     safeError(res, e, 'Creative pipeline');
+  }
+});
+
+/**
+ * POST /api/meta/upload-image
+ * 이미지 파일을 받아 Meta Ad Account에 업로드하고 image_hash 반환
+ */
+app.post('/api/meta/upload-image', upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '이미지 파일이 없습니다' });
+  try {
+    const meta = getMetaClient();
+    if (!meta._configured) return res.status(503).json({ error: 'Meta API not configured' });
+
+    const result = await meta.account.createAdImage([], {
+      bytes: req.file.buffer.toString('base64'),
+    });
+    const images = result._data?.images;
+    const hash = images ? Object.values(images)[0]?.hash : null;
+    const url  = images ? Object.values(images)[0]?.url  : null;
+    if (!hash) throw new Error('Meta 이미지 업로드 실패');
+
+    logger.info('Image uploaded to Meta via drag-drop', { hash, size: req.file.size });
+    res.json({ hash, url, filename: req.file.originalname, size: req.file.size });
+  } catch (e) {
+    safeError(res, e, 'Meta upload-image');
+  }
+});
+
+/** GET /api/meta/pixels — 광고 계정의 Meta 픽셀 목록 */
+app.get('/api/meta/pixels', async (req, res) => {
+  try {
+    const meta = getMetaClient();
+    if (!meta._configured) return res.status(503).json({ error: 'Meta API not configured' });
+    const pixels = await meta.getPixels();
+    res.json(pixels);
+  } catch (e) {
+    safeError(res, e, 'Meta getPixels');
+  }
+});
+
+/** GET /api/meta/instagram-accounts — 비즈니스에 연결된 Instagram 계정 목록 */
+app.get('/api/meta/instagram-accounts', async (req, res) => {
+  try {
+    const meta = getMetaClient();
+    if (!meta._configured) return res.status(503).json({ error: 'Meta API not configured' });
+    const accounts = await meta.getInstagramAccounts();
+    res.json(accounts);
+  } catch (e) {
+    safeError(res, e, 'Meta getInstagramAccounts');
+  }
+});
+
+/** GET /api/meta/pages — 비즈니스에 연결된 Facebook 페이지 목록 */
+app.get('/api/meta/pages', async (req, res) => {
+  try {
+    const meta = getMetaClient();
+    if (!meta._configured) return res.status(503).json({ error: 'Meta API not configured' });
+    const pages = await meta.getPages();
+    res.json(pages);
+  } catch (e) {
+    safeError(res, e, 'Meta getPages');
+  }
+});
+
+/** GET /api/meta/campaigns/:campaignId/adsets — Meta 캠페인의 광고 세트 목록 */
+app.get('/api/meta/campaigns/:campaignId/adsets', async (req, res) => {
+  try {
+    const meta = getMetaClient();
+    if (!meta._configured) return res.status(503).json({ error: 'Meta API not configured' });
+
+    // 내부 DB ID → Meta platform_id 변환
+    const row = db.prepare('SELECT platform_id FROM campaigns WHERE id = ? OR platform_id = ?')
+      .get(req.params.campaignId, req.params.campaignId);
+    const platformId = row?.platform_id || req.params.campaignId;
+
+    const adSets = await meta.getAdSets(platformId);
+    res.json(adSets);
+  } catch (e) {
+    safeError(res, e, 'Meta getAdSets');
+  }
+});
+
+/**
+ * POST /api/meta/creative/direct
+ * Meta API 직접 소재 등록 (템플릿 불필요)
+ * Body: { name, pageId, adSetId, campaignId, message, headline, description,
+ *         link, imageUrl, mediaPath, callToAction, adStatus,
+ *         abGroup, persona_tag, desire_tag, awareness_stage }
+ */
+app.post('/api/meta/creative/direct', async (req, res) => {
+  const err = validateRequired(req.body, ['name', 'pageId', 'adSetId', 'campaignId', 'message', 'link']);
+  if (err) return res.status(400).json({ error: err });
+
+  const {
+    name, pageId, adSetId, campaignId,
+    message, headline, description, link,
+    imageUrl, mediaPath, callToAction = 'LEARN_MORE',
+    adStatus = 'PAUSED', instagramAccountId, conversionEvent,
+    abGroup, persona_tag, desire_tag, awareness_stage,
+  } = req.body;
+
+  try {
+    const meta = getMetaClient();
+    if (!meta._configured) return res.status(503).json({ error: 'Meta API not configured' });
+
+    // 이미지 처리 (로컬 파일 우선, 없으면 URL)
+    let imageHash = null;
+    let resolvedImageUrl = imageUrl || null;
+    if (mediaPath) {
+      const { imageHash: hash } = await creativePipeline.uploadImageToMeta(mediaPath);
+      imageHash = hash;
+      resolvedImageUrl = null;
+    }
+
+    logger.info('Creating Meta creative', {
+      name, pageId, adSetId, instagramAccountId, callToAction,
+      hasImageHash: !!imageHash, hasImageUrl: !!resolvedImageUrl,
+    });
+
+    // Meta AdCreative 생성
+    const adCreative = await meta.createCreative({
+      name, pageId, instagramAccountId: instagramAccountId || null,
+      message, headline, description,
+      link, imageHash, imageUrl: resolvedImageUrl, callToAction,
+    });
+    logger.info('Meta creative created OK', { creativeId: adCreative.id });
+
+    // 전환 이벤트가 선택된 경우 픽셀 자동 조회
+    let resolvedPixelId = null;
+    if (conversionEvent) {
+      const pixelList = await meta.getPixels().catch(() => []);
+      resolvedPixelId = pixelList.length > 0 ? pixelList[0].id : null;
+    }
+
+    // Meta Ad 생성
+    const ad = await meta.createAd({
+      adSetId, creativeId: adCreative.id, name, status: adStatus,
+      pixelId: resolvedPixelId, conversionEvent: conversionEvent || null,
+    });
+
+    // 내부 DB에도 기록
+    const creativeId = `cr_${crypto.randomBytes(6).toString('hex')}`;
+    db.prepare(`
+      INSERT INTO creatives
+        (id, platform, platform_id, campaign_id, ad_set_id, name, type,
+         status, headline, description, body_text, cta, media_url, landing_url,
+         ab_group, metadata_json)
+      VALUES (?, 'meta', ?, ?, ?, ?, 'image', 'UPLOADED', ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      creativeId, ad.id, campaignId, adSetId, name,
+      headline || null, description || null, message,
+      callToAction, resolvedImageUrl || null, link,
+      abGroup || null,
+      JSON.stringify({ metaCreativeId: adCreative.id, persona_tag, desire_tag, awareness_stage }),
+    );
+
+    broadcastToClients('creative_registered', { creativeId, adId: ad.id });
+    res.json({ success: true, creativeId, adId: ad.id, metaCreativeId: adCreative.id });
+  } catch (e) {
+    safeError(res, e, 'Meta direct creative');
   }
 });
 

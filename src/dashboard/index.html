@@ -125,6 +125,7 @@
       beaker: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M4.5 3h15M6 3v7.5l-3.5 8A2 2 0 0 0 4.24 21h15.52a2 2 0 0 0 1.74-2.5L18 10.5V3"/><path d="M8.5 14h7"/></svg>,
       users: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
       upload: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>,
+      image: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>,
     };
 
     // ─── Model Badge (Perplexity style) ──────────────────────
@@ -275,6 +276,484 @@
         </div>
       );
     }
+
+      // ─── Meta Direct Upload Form (defined outside App to prevent remount on re-render) ───
+      const MetaDirectUploadForm = ({ setMetaTab, campaigns }) => {
+        const EMPTY = {
+          name: '', campaignId: '', adSetId: '', pageId: '', instagramAccountId: '',
+          conversionEvent: '',
+          message: '', headline: '', description: '',
+          link: '', imageUrl: '', mediaPath: '',
+          callToAction: 'LEARN_MORE', adStatus: 'PAUSED',
+          abGroup: '', persona_tag: '', desire_tag: '', awareness_stage: '',
+        };
+        const CTA_OPTIONS = [
+          { value: 'LEARN_MORE', label: '더 알아보기' },
+          { value: 'SHOP_NOW', label: '지금 쇼핑하기' },
+          { value: 'SIGN_UP', label: '가입하기' },
+          { value: 'DOWNLOAD', label: '다운로드' },
+          { value: 'BOOK_TRAVEL', label: '예약하기' },
+          { value: 'CONTACT_US', label: '문의하기' },
+          { value: 'GET_OFFER', label: '혜택 받기' },
+          { value: 'SUBSCRIBE', label: '구독하기' },
+          { value: 'WATCH_MORE', label: '더 보기' },
+          { value: 'NO_BUTTON', label: '버튼 없음' },
+        ];
+        const CONVERSION_EVENTS = [
+          { value: 'PURCHASE',              label: '구매 (Purchase)' },
+          { value: 'INITIATE_CHECKOUT',     label: '결제 시작 (Initiate Checkout)' },
+          { value: 'ADD_TO_CART',           label: '장바구니 추가 (Add to Cart)' },
+          { value: 'ADD_PAYMENT_INFO',      label: '결제 정보 추가 (Add Payment Info)' },
+          { value: 'VIEW_CONTENT',          label: '콘텐츠 조회 (View Content)' },
+          { value: 'SEARCH',               label: '검색 (Search)' },
+          { value: 'LEAD',                  label: '리드 (Lead)' },
+          { value: 'COMPLETE_REGISTRATION', label: '가입 완료 (Complete Registration)' },
+          { value: 'SUBSCRIBE',             label: '구독 (Subscribe)' },
+          { value: 'CONTACT',               label: '문의 (Contact)' },
+        ];
+        const [df, setDf] = useState(EMPTY);
+        const [imgMode, setImgMode] = useState('drop');
+        const [dragOver, setDragOver] = useState(false);
+        const [uploadedImage, setUploadedImage] = useState(null);
+        const [imgUploading, setImgUploading] = useState(false);
+        const [imgUploadError, setImgUploadError] = useState('');
+        const fileInputRef = React.useRef(null);
+        const [dStatus, setDStatus] = useState(null);
+        const [dError, setDError] = useState('');
+        const [dResult, setDResult] = useState(null);
+        const [adSets, setAdSets] = useState([]);
+        const [adSetsLoading, setAdSetsLoading] = useState(false);
+        const [pages, setPages] = useState([]);
+        const [pagesLoading, setPagesLoading] = useState(false);
+        const [igAccounts, setIgAccounts] = useState([]);
+        const [igLoading, setIgLoading] = useState(false);
+        const set = (k, v) => setDf(prev => ({ ...prev, [k]: v }));
+
+        useEffect(() => {
+          setPagesLoading(true);
+          apiFetch(`${API}/meta/pages`)
+            .then(r => r.json())
+            .then(data => { setPages(Array.isArray(data) ? data : []); setPagesLoading(false); })
+            .catch(() => setPagesLoading(false));
+
+          setIgLoading(true);
+          apiFetch(`${API}/meta/instagram-accounts`)
+            .then(r => r.json())
+            .then(data => { setIgAccounts(Array.isArray(data) ? data : []); setIgLoading(false); })
+            .catch(() => setIgLoading(false));
+        }, []);
+
+        useEffect(() => {
+          if (!df.campaignId) { setAdSets([]); set('adSetId', ''); return; }
+          setAdSetsLoading(true);
+          setAdSets([]);
+          set('adSetId', '');
+          apiFetch(`${API}/meta/campaigns/${df.campaignId}/adsets`)
+            .then(r => r.json())
+            .then(data => { setAdSets(Array.isArray(data) ? data : []); setAdSetsLoading(false); })
+            .catch(() => setAdSetsLoading(false));
+        }, [df.campaignId]);
+
+        const handleImageUpload = async (file) => {
+          if (!file || !file.type.startsWith('image/')) {
+            setImgUploadError('이미지 파일만 업로드 가능합니다'); return;
+          }
+          setImgUploading(true); setImgUploadError(''); setUploadedImage(null);
+          const formData = new FormData();
+          formData.append('image', file);
+          try {
+            const res = await fetch(`${API}/meta/upload-image`, {
+              method: 'POST',
+              ...(API_TOKEN ? { headers: { Authorization: `Bearer ${API_TOKEN}` } } : {}),
+              body: formData,
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '업로드 실패');
+            setUploadedImage(data);
+          } catch (e) {
+            setImgUploadError(e.message);
+          } finally { setImgUploading(false); }
+        };
+
+        const handleDrop = (e) => {
+          e.preventDefault(); setDragOver(false);
+          const file = e.dataTransfer.files[0];
+          if (file) handleImageUpload(file);
+        };
+
+        const handleSubmit = async () => {
+          setDStatus('loading'); setDError(''); setDResult(null);
+          try {
+            const body = {
+              name: df.name, pageId: df.pageId, adSetId: df.adSetId,
+              campaignId: df.campaignId, message: df.message, link: df.link,
+              callToAction: df.callToAction, adStatus: df.adStatus,
+              ...(df.instagramAccountId && { instagramAccountId: df.instagramAccountId }),
+              ...(df.conversionEvent && { conversionEvent: df.conversionEvent }),
+              ...(df.headline && { headline: df.headline }),
+              ...(df.description && { description: df.description }),
+              ...(imgMode === 'drop' && uploadedImage?.hash && { imageHash: uploadedImage.hash }),
+              ...(imgMode === 'url' && df.imageUrl && { imageUrl: df.imageUrl }),
+              ...(imgMode === 'path' && df.mediaPath && { mediaPath: df.mediaPath }),
+              ...(df.abGroup && { abGroup: df.abGroup }),
+              ...(df.persona_tag && { persona_tag: df.persona_tag }),
+              ...(df.desire_tag && { desire_tag: df.desire_tag }),
+              ...(df.awareness_stage && { awareness_stage: df.awareness_stage }),
+            };
+            const res = await apiFetch(`${API}/meta/creative/direct`, {
+              method: 'POST', body: JSON.stringify(body),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '등록 실패');
+            setDResult(data);
+            setDStatus('success');
+            setDf(EMPTY);
+          } catch (e) {
+            setDError(e.message);
+            setDStatus('error');
+          }
+        };
+
+        const isValid = df.name && df.pageId && df.adSetId && df.campaignId && df.message && df.link;
+
+        return (
+          <div className="max-w-2xl space-y-5">
+            <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+              <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center">1</span>
+                기본 정보
+              </p>
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">소재명 (광고 이름) *</label>
+                <input type="text" placeholder="예: 봄_프로모션_배너_v1"
+                  value={df.name} onChange={e => set('name', e.target.value)}
+                  className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">캠페인 *</label>
+                <select value={df.campaignId} onChange={e => set('campaignId', e.target.value)}
+                  className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                  <option value="">-- 캠페인 선택 --</option>
+                  {campaigns.filter(c => c.platform === 'meta').map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">광고 세트 (Ad Set) *</label>
+                {!df.campaignId ? (
+                  <div className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-ppl-bg text-ppl-sub">캠페인을 먼저 선택하세요</div>
+                ) : adSetsLoading ? (
+                  <div className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-ppl-bg text-ppl-sub flex items-center gap-2">
+                    <span className="w-3 h-3 border-2 border-ppl-teal border-t-transparent rounded-full animate-spin"></span>
+                    불러오는 중...
+                  </div>
+                ) : adSets.length === 0 ? (
+                  <div className="w-full text-sm border border-amber-200 rounded-lg px-3 py-2 bg-amber-50 text-amber-600">이 캠페인에 광고 세트가 없습니다</div>
+                ) : (
+                  <select value={df.adSetId} onChange={e => set('adSetId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    <option value="">-- 광고 세트 선택 --</option>
+                    {adSets.map(a => (
+                      <option key={a.id} value={a.id}>{a.name} ({a.status})</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">Instagram / Threads 계정 <span className="text-ppl-sub font-normal">(선택)</span></label>
+                {igLoading ? (
+                  <div className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-ppl-bg text-ppl-sub flex items-center gap-2">
+                    <span className="w-3 h-3 border-2 border-ppl-teal border-t-transparent rounded-full animate-spin"></span>
+                    불러오는 중...
+                  </div>
+                ) : igAccounts.length === 0 ? (
+                  <input type="text" placeholder="Instagram 계정 ID 직접 입력"
+                    value={df.instagramAccountId} onChange={e => set('instagramAccountId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white font-mono" />
+                ) : (
+                  <select value={df.instagramAccountId} onChange={e => set('instagramAccountId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    <option value="">-- 선택 안 함 (Facebook 페이지로만 게재) --</option>
+                    {igAccounts.map(a => (
+                      <option key={a.id} value={a.id}>@{a.username} — {a.name}</option>
+                    ))}
+                  </select>
+                )}
+                <p className="text-xs text-ppl-sub mt-1">선택 시 Instagram·Threads 지면에도 해당 계정으로 게재됩니다.</p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">전환 이벤트 <span className="text-ppl-sub font-normal">(선택)</span></label>
+                <select value={df.conversionEvent} onChange={e => set('conversionEvent', e.target.value)}
+                  className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                  <option value="">-- 선택 안 함 --</option>
+                  {CONVERSION_EVENTS.map(ev => (
+                    <option key={ev.value} value={ev.value}>{ev.label}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-ppl-sub mt-1">픽셀에 연결된 전환 이벤트를 기준으로 광고 성과를 최적화합니다.</p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">Facebook 페이지 *</label>
+                {pagesLoading ? (
+                  <div className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-ppl-bg text-ppl-sub flex items-center gap-2">
+                    <span className="w-3 h-3 border-2 border-ppl-teal border-t-transparent rounded-full animate-spin"></span>
+                    불러오는 중...
+                  </div>
+                ) : pages.length === 0 ? (
+                  <input type="text" placeholder="페이지 ID 직접 입력"
+                    value={df.pageId} onChange={e => set('pageId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white font-mono" />
+                ) : (
+                  <select value={df.pageId} onChange={e => set('pageId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    <option value="">-- 페이지 선택 --</option>
+                    {pages.map(p => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+              <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center">2</span>
+                이미지
+              </p>
+              <div className="flex gap-1 bg-ppl-bg rounded-lg p-1 w-fit">
+                {[['drop','파일 업로드'],['url','이미지 URL'],['path','로컬 경로']].map(([v, l]) => (
+                  <button key={v} onClick={() => { setImgMode(v); setUploadedImage(null); setImgUploadError(''); }}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${imgMode === v ? 'bg-white text-ppl-text shadow-sm' : 'text-ppl-sub hover:text-ppl-text'}`}>{l}</button>
+                ))}
+              </div>
+              {imgMode === 'drop' && (
+                <div>
+                  {!uploadedImage ? (
+                    <div
+                      onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                      onDragLeave={() => setDragOver(false)}
+                      onDrop={handleDrop}
+                      onClick={() => fileInputRef.current?.click()}
+                      className={`relative flex flex-col items-center justify-center w-full h-44 rounded-2xl border-2 border-dashed cursor-pointer transition-all ${
+                        dragOver ? 'border-blue-400 bg-blue-50' : 'border-ppl-border bg-ppl-bg hover:bg-gray-50 hover:border-blue-300'
+                      }`}
+                    >
+                      <input ref={fileInputRef} type="file" accept="image/*" className="hidden"
+                        onChange={e => { if (e.target.files[0]) handleImageUpload(e.target.files[0]); }} />
+                      {imgUploading ? (
+                        <div className="flex flex-col items-center gap-2 text-ppl-sub">
+                          <span className="w-8 h-8 border-2 border-ppl-teal border-t-transparent rounded-full animate-spin"></span>
+                          <span className="text-sm">Meta에 업로드 중...</span>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center gap-2 text-ppl-sub pointer-events-none">
+                          <svg width="36" height="36" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                          </svg>
+                          <p className="text-sm font-medium text-ppl-text">이미지를 드래그하거나 클릭해서 업로드</p>
+                          <p className="text-xs">JPG, PNG, GIF · 최대 30MB</p>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex items-start gap-4 p-4 bg-emerald-50 border border-emerald-200 rounded-2xl">
+                      <img src={uploadedImage.url} alt="uploaded"
+                        className="w-24 h-24 object-cover rounded-xl border border-emerald-200 shrink-0"
+                        onError={e => { e.target.style.display='none'; }} />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-emerald-700 mb-1">Meta 업로드 완료</p>
+                        <p className="text-xs text-emerald-600 truncate">{uploadedImage.filename}</p>
+                        <p className="text-xs font-mono text-emerald-600 mt-1 break-all">hash: {uploadedImage.hash}</p>
+                      </div>
+                      <button onClick={() => { setUploadedImage(null); setImgUploadError(''); }}
+                        className="text-emerald-400 hover:text-red-500 transition-colors text-lg leading-none">×</button>
+                    </div>
+                  )}
+                  {imgUploadError && (
+                    <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mt-2">{imgUploadError}</p>
+                  )}
+                </div>
+              )}
+              {imgMode === 'url' && (
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">이미지 URL (공개 접근 가능한 URL)</label>
+                  <input type="url" placeholder="https://example.com/image.jpg"
+                    value={df.imageUrl} onChange={e => set('imageUrl', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  {df.imageUrl && (
+                    <div className="mt-2 w-32 h-20 rounded-lg border border-ppl-border overflow-hidden bg-ppl-bg">
+                      <img src={df.imageUrl} alt="preview" className="w-full h-full object-cover"
+                        onError={e => { e.target.style.display='none'; }} />
+                    </div>
+                  )}
+                </div>
+              )}
+              {imgMode === 'path' && (
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">서버 로컬 파일 경로</label>
+                  <input type="text" placeholder="C:\images\banner.jpg"
+                    value={df.mediaPath} onChange={e => set('mediaPath', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white font-mono" />
+                  <p className="text-xs text-ppl-sub mt-1">서버에서 접근 가능한 절대 경로를 입력하세요.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+              <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center">3</span>
+                광고 문구
+              </p>
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">
+                  주요 텍스트 (Primary Text) *
+                  <span className="ml-1 text-ppl-sub font-normal">— 피드에 표시되는 본문</span>
+                </label>
+                <textarea rows={4} placeholder="예: 지금 봄 시즌 특별 할인! 최대 50% 혜택을 놓치지 마세요."
+                  value={df.message} onChange={e => set('message', e.target.value)}
+                  className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white resize-none" />
+                <p className="text-xs text-ppl-sub mt-1">{df.message.length}자</p>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+              <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center">4</span>
+                링크 &amp; CTA
+              </p>
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">웹사이트 URL (랜딩 페이지) *</label>
+                <input type="url" placeholder="https://example.com/landing"
+                  value={df.link} onChange={e => set('link', e.target.value)}
+                  className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">CTA 버튼</label>
+                  <select value={df.callToAction} onChange={e => set('callToAction', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    {CTA_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">광고 상태</label>
+                  <select value={df.adStatus} onChange={e => set('adStatus', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    <option value="PAUSED">일시정지 (PAUSED)</option>
+                    <option value="ACTIVE">활성 (ACTIVE)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {dStatus === 'error' && (
+              <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-xl px-4 py-3">{dError}</div>
+            )}
+            {dStatus === 'success' && dResult && (
+              <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-3 space-y-1">
+                <p className="font-semibold">등록 완료!</p>
+                <p className="text-xs">Ad ID: <span className="font-mono">{dResult.adId}</span></p>
+                <p className="text-xs">Meta Creative ID: <span className="font-mono">{dResult.metaCreativeId}</span></p>
+              </div>
+            )}
+
+            <button onClick={handleSubmit} disabled={dStatus === 'loading' || !isValid}
+              className="w-full py-3 rounded-xl bg-blue-500 text-white text-sm font-semibold hover:bg-blue-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm">
+              {dStatus === 'loading' ? (
+                <><span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>Meta에 등록 중...</>
+              ) : (
+                <>{Icons.upload} Meta에 광고 등록</>
+              )}
+            </button>
+            <p className="text-xs text-center text-ppl-sub">* 표시 항목은 필수입니다. 광고는 기본적으로 일시정지 상태로 등록됩니다.</p>
+          </div>
+        );
+      };
+
+      // ─── Meta Creative Settings Panel (defined outside App to prevent remount) ───
+      const MetaCreativeSettingsPanel = ({ campaigns }) => {
+        const [metaTab, setMetaTab] = React.useState('upload');
+        const [metaTemplates, setMetaTemplates] = React.useState([]);
+        const [loadingTemplates, setLoadingTemplates] = React.useState(false);
+
+        React.useEffect(() => {
+          if (metaTab !== 'templates') return;
+          setLoadingTemplates(true);
+          apiFetch(`${API}/templates?platform=meta`).then(r => r.json()).catch(() => [])
+            .then(t => { setMetaTemplates(Array.isArray(t) ? t : []); setLoadingTemplates(false); });
+        }, [metaTab]);
+
+        const tabs = [
+          { id: 'upload', label: '소재 등록' },
+          { id: 'templates', label: '템플릿' },
+        ];
+
+        return (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <h2 className="text-2xl font-bold text-ppl-text">Meta 광고 소재 셋팅</h2>
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-600">Meta 전용</span>
+                </div>
+                <p className="text-sm text-ppl-sub">새 소재 등록 · 템플릿 관리</p>
+              </div>
+            </div>
+            <div className="flex gap-1 bg-white border border-ppl-border rounded-xl p-1 w-fit">
+              {tabs.map(t => (
+                <button key={t.id} onClick={() => setMetaTab(t.id)}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    metaTab === t.id ? 'bg-blue-500 text-white' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'
+                  }`}>{t.label}</button>
+              ))}
+            </div>
+            {metaTab === 'upload' && (
+              <MetaDirectUploadForm setMetaTab={setMetaTab} campaigns={campaigns} />
+            )}
+            {metaTab === 'templates' && (
+              <div className="space-y-3">
+                {loadingTemplates ? (
+                  <div className="flex items-center justify-center py-12 text-ppl-sub text-sm">불러오는 중...</div>
+                ) : metaTemplates.length === 0 ? (
+                  <div className="bg-white rounded-2xl border border-ppl-border p-10 text-center text-ppl-sub">
+                    <p className="text-sm">Meta 템플릿이 없습니다.</p>
+                    <p className="text-xs mt-1">Content Studio → Templates에서 Meta 템플릿을 생성하세요.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-4">
+                    {metaTemplates.map(t => (
+                      <div key={t.id} className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm hover:border-blue-300 transition-colors">
+                        <div className="flex items-center gap-2 mb-3">
+                          <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-md font-medium">Meta</span>
+                          {t.is_builtin ? <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-md">기본</span> : <span className="text-xs bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-md">커스텀</span>}
+                        </div>
+                        <p className="text-sm font-semibold mb-1">{t.name}</p>
+                        {t.headline && <p className="text-xs text-ppl-sub truncate mb-2">헤드라인: {t.headline}</p>}
+                        {t.description && <p className="text-xs text-ppl-sub truncate">설명: {t.description}</p>}
+                        {t.variables_json && (() => {
+                          try {
+                            const vars = JSON.parse(t.variables_json);
+                            return vars.length > 0 ? (
+                              <div className="mt-3 flex flex-wrap gap-1">
+                                {vars.map(v => <span key={v} className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded font-mono">{`{{${v}}}`}</span>)}
+                              </div>
+                            ) : null;
+                          } catch { return null; }
+                        })()}
+                        <button onClick={() => setMetaTab('upload')}
+                          className="mt-4 w-full py-1.5 rounded-lg bg-blue-50 text-blue-600 text-xs font-medium hover:bg-blue-100 transition-colors"
+                        >이 템플릿으로 소재 등록</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      };
 
     // ═══ MAIN APP ════════════════════════════════════════════
     function App() {
@@ -552,10 +1031,13 @@
               { icon: Icons.beaker, label: 'A/B Tests', action: () => { setActiveView('dashboard'); setContentTab('ab-tests'); } },
               { icon: Icons.users, label: 'Audiences', action: () => { setActiveView('dashboard'); setContentTab('audiences'); } },
               { icon: Icons.upload, label: 'Creative Upload', action: () => { setActiveView('dashboard'); setContentTab('upload'); } },
+              { icon: Icons.image, label: 'Meta 소재 셋팅', action: () => setActiveView('meta-creative') },
             ].map((item, i) => (
               <button key={i} onClick={item.action}
                 className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${
-                  (item.label === 'Creatives' && activeView === 'creatives') ? 'bg-ppl-teal text-white' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'
+                  (item.label === 'Creatives' && activeView === 'creatives') ||
+                  (item.label === 'Meta 소재 셋팅' && activeView === 'meta-creative')
+                    ? 'bg-ppl-teal text-white' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'
                 }`}>
                 {item.icon}
                 <span>{item.label}</span>
@@ -1481,7 +1963,11 @@
 
             {/* Chat / Content Scroll */}
             <div className="flex-1 overflow-y-auto scrollbar-thin">
-              {activeView === 'creatives' ? (
+              {activeView === 'meta-creative' ? (
+                <div className="px-8 py-8">
+                  <MetaCreativeSettingsPanel campaigns={campaigns} />
+                </div>
+              ) : activeView === 'creatives' ? (
                 <div className="px-8 py-8">
                   <CreativesGalleryPanel />
                 </div>

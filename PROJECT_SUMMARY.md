@@ -1,7 +1,7 @@
 # Ad Automation Framework — 프로젝트 정리
 
 **최초 작성일**: 2026-03-18
-**최종 수정일**: 2026-03-22
+**최종 수정일**: 2026-03-24
 
 ## 프로젝트 개요
 
@@ -389,6 +389,82 @@ SELECT platform,
 FROM performance
 GROUP BY platform;
 ```
+
+---
+
+## 2026-03-24 작업 내역
+
+### 과거 데이터 백필
+- [x] `scripts/collect-historical.js` 실행 — Meta + Google 2026-03-01 ~ 2026-03-23 데이터 수집
+  - Meta: 297건 저장
+  - Google: 0건 (네트워크 미연결 환경)
+
+### Meta 광고 소재 셋팅 탭 신규 구현
+
+#### 신규 탭 추가
+- [x] 사이드바에 **"Meta 소재 셋팅"** 메뉴 추가 → `activeView = 'meta-creative'`
+- [x] `MetaCreativeSettingsPanel` 컴포넌트 — 서브탭: 소재 등록 / 템플릿
+  - 소재 목록 탭은 이후 요청으로 제거됨
+
+#### Meta API 직접 소재 등록 폼 (`MetaDirectUploadForm`)
+- [x] **기본 정보 섹션**
+  - 소재명(광고 이름) 입력
+  - 캠페인 드롭다운 (Meta 캠페인만 필터)
+  - Ad Set 드롭다운 — 캠페인 선택 시 Meta API로 동적 로드
+  - Instagram / Threads 계정 드롭다운 — 비즈니스 계정 owned_accounts API
+  - 전환 이벤트 드롭다운 — 10개 표준 이벤트 (구매/결제시작/장바구니 등)
+  - Facebook 페이지 드롭다운 — business owned_pages API
+- [x] **이미지 섹션** — 파일 업로드 / 이미지 URL / 로컬 경로 3가지 모드
+  - 드래그앤드롭 업로드 존 구현 (multer memoryStorage → base64 → Meta AdImage API)
+  - 업로드 성공 시 썸네일 + hash 표시
+- [x] **광고 문구 섹션** — 주요 텍스트(Primary Text) 입력 (Headline/Description 제거)
+- [x] **링크 & CTA 섹션** — 랜딩 URL, CTA 버튼(10종), 광고 상태(PAUSED/ACTIVE)
+
+#### Meta API 신규 엔드포인트 (`src/server.js`)
+| 엔드포인트 | 설명 |
+|---|---|
+| `GET /api/meta/pages` | Facebook 페이지 목록 (me/accounts → business owned_pages 폴백) |
+| `GET /api/meta/instagram-accounts` | Instagram 계정 목록 (business owned_accounts) |
+| `GET /api/meta/pixels` | Meta 픽셀 목록 (adspixels) |
+| `GET /api/meta/campaigns/:id/adsets` | 캠페인별 Ad Set 목록 (platform_id DB 조회 후 Meta API 호출) |
+| `POST /api/meta/upload-image` | 이미지 업로드 → Meta AdImage hash 반환 |
+| `POST /api/meta/creative/direct` | AdCreative + Ad 생성 → DB 저장 |
+
+#### Meta Client 신규 메서드 (`src/meta/client.js`)
+- `getPages()` — me/accounts 시도 후 실패 시 business owned_pages 폴백
+- `getInstagramAccounts()` — business owned instagram_accounts
+- `getPixels()` — adspixels API
+- `getAdSets(campaignId)` — Campaign SDK object로 adsets 조회
+- `createCreative()` — imageHash / imageUrl(picture) / instagramAccountId / headline / description 지원
+- `createAd()` — tracking_specs(pixelId + custom_event_type) 지원
+
+#### DB 스키마 추가 (`src/utils/db.js`)
+- `creatives` 테이블 추가 (platform, campaign_id, ad_set_id, name, type, status, headline, body_text, cta, media_url, landing_url, ab_group, metadata_json)
+- `meta_pages` 테이블 추가
+
+### 버그 수정
+
+- [x] **React 컴포넌트 리렌더링 시 폼 초기화 버그**
+  - 원인: `MetaDirectUploadForm`, `MetaCreativeSettingsPanel`이 `App()` 함수 안에 `const`로 정의되어 App 리렌더마다 새 함수 참조 생성 → React가 매번 언마운트/리마운트
+  - 수정: 두 컴포넌트를 `App()` 밖으로 이동, `campaigns`를 prop으로 명시적 전달
+
+- [x] **Rate Limiter 이미지 업로드 차단**
+  - 원인: `app.post('/api/*', mutationLimiter)` catch-all이 upload-image 엔드포인트에도 적용됨 (분당 20→60으로 증가해도 동일)
+  - 수정: `req.originalUrl.includes('/meta/upload-image')` 조건으로 upload-image를 rate limit에서 제외
+
+- [x] **Ad Set 드롭다운 빈 값**
+  - 원인: DB 내부 ID(`meta_120241553714580409`)를 Meta API에 전달 — Meta는 플랫폼 ID(`120241553714580409`) 필요
+  - 수정: 서버에서 `campaigns` 테이블의 `platform_id` 조회 후 Meta API 호출
+
+- [x] **`safeError` Meta 에러 상세 미출력**
+  - `FacebookRequestError.response`가 직접 파싱된 에러 body임을 확인 (`err.response.error` 아님)
+  - `err.response.message`, `err.response.code`, `err.response.type`, `err.response.fbtrace_id` 추출하여 클라이언트에 전달
+
+### 알려진 이슈
+
+- **광고 등록 불가 — Meta 앱 개발 모드**
+  - 오류: `[code 100] 광고 크리에이티브 게시물이 개발 모드인 앱에서 만들어졌습니다 (OAuthException)`
+  - 해결: [developers.facebook.com/apps](https://developers.facebook.com/apps) → 해당 앱 → "개발 중" 토글을 **"라이브"** 로 전환 필요
 
 ---
 

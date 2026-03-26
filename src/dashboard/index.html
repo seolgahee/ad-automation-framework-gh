@@ -689,6 +689,1303 @@
         );
       };
 
+      // ─── Google Direct Upload Form ───
+      const GoogleDirectUploadForm = ({ campaigns }) => {
+        const MODES = [
+          { id: 'search',     label: 'Search',     desc: '검색 광고 (RSA)' },
+          { id: 'display',    label: 'Display',    desc: 'GDN 디스플레이' },
+          { id: 'video',      label: 'Video',      desc: 'YouTube 동영상' },
+          { id: 'demand_gen', label: 'Demand Gen', desc: 'Discover/Gmail/YouTube' },
+          { id: 'shopping',   label: 'Shopping',   desc: '쇼핑 (Merchant Center)' },
+          { id: 'pmax',       label: 'PMAX',       desc: '퍼포먼스 맥스' },
+        ];
+        // Which modes need headlines/descriptions
+        const NEEDS_HEADLINES = ['search', 'display', 'pmax'];
+        const NEEDS_DESCRIPTIONS = ['search', 'display', 'pmax'];
+        const NEEDS_LONG_HEADLINE = ['display', 'pmax'];
+        const NEEDS_BUSINESS_NAME = ['display', 'pmax'];
+        const NEEDS_IMAGES = ['display', 'pmax'];
+        const NEEDS_KEYWORDS = ['search'];
+        const NEEDS_VIDEO = ['video'];
+        const NEEDS_MERCHANT = ['shopping'];
+
+        const [mode, setMode] = useState('search');
+        const [df, setDf] = useState({
+          name: '', dailyBudget: '1', campaignId: '', adGroupName: '',
+          keywords: '', finalUrl: '', adStatus: 'PAUSED',
+          businessName: '', longHeadline: '',
+          youtubeVideoId: '', videoHeadline: '', videoDescription: '',
+          merchantId: '', callToActionText: '',
+        });
+        const [headlines, setHeadlines] = useState(['', '', '']);
+        const [descriptions, setDescriptions] = useState(['', '']);
+        const [images, setImages] = useState({ logo: null, marketing: null, square: null });
+
+        // ── Demand Gen specific state ──
+        const [dgAdType, setDgAdType] = useState('image'); // 'image' | 'video'
+        const [dgBiddingGoal, setDgBiddingGoal] = useState('CONVERSIONS');
+        const [dgTargetCpa, setDgTargetCpa] = useState('');
+        const [dgUseCpa, setDgUseCpa] = useState(false);
+        const [dgProductFeed, setDgProductFeed] = useState(false);
+        const [dgStartDate, setDgStartDate] = useState('');
+        const [dgEndDate, setDgEndDate] = useState('');
+        const [dgHeadlines, setDgHeadlines] = useState(['']);
+        const [dgLongHeadlines, setDgLongHeadlines] = useState(['']);
+        const [dgDescriptions, setDgDescriptions] = useState(['']);
+        const [dgAdName, setDgAdName] = useState('');
+        const [dgMarketingImages, setDgMarketingImages] = useState([]);   // [{base64, name}]
+        const [dgSquareImages, setDgSquareImages] = useState([]);
+        const [dgLogos, setDgLogos] = useState([]);
+        const [dgYoutubeIds, setDgYoutubeIds] = useState(['']);
+        const [dgUseCpc, setDgUseCpc] = useState(false);
+        const [dgTargetCpc, setDgTargetCpc] = useState('');
+        // Conversion goals: single select for CONVERSIONS, multi select for CONVERSION_VALUE
+        const [dgConversionGoal, setDgConversionGoal] = useState('signup'); // for CONVERSIONS (radio)
+        const [dgConversionGoals, setDgConversionGoals] = useState(['signup', 'purchase']); // for CONVERSION_VALUE (checkbox)
+        const DG_CONVERSION_GOALS = [
+          { id: 'signup', label: '가입', icon: '☑', source: '웹사이트', actions: '액션 1개', value: '동적' },
+          { id: 'purchase', label: '구매', icon: '🏷', source: '웹사이트', actions: '액션 3개', value: '동적' },
+          { id: 'add_to_cart', label: '장바구니에 추가', icon: '🛒', source: '웹사이트', actions: '액션 1개', value: '동적' },
+          { id: 'engagement', label: '참여', icon: '✨', source: '웹사이트', actions: '액션 1개', value: '동적' },
+          { id: 'directions', label: '길찾기', icon: '📍', source: '웹사이트', actions: '액션 1개', value: '동적' },
+        ];
+        const DG_CTA_OPTIONS = [
+          { value: '', label: '(자동)' },
+          { value: '사이트 방문', label: '사이트 방문' },
+          { value: '구매', label: '구매' },
+          { value: '가입', label: '가입' },
+          { value: '문의', label: '문의' },
+          { value: '다운로드', label: '다운로드' },
+          { value: '자세히 알아보기', label: '자세히 알아보기' },
+          { value: '예약', label: '예약' },
+        ];
+        const [dStatus, setDStatus] = useState(null);
+        const [dError, setDError] = useState('');
+        const [dResult, setDResult] = useState(null);
+
+        const set = (k, v) => setDf(prev => ({ ...prev, [k]: v }));
+
+        // Adjust headline/description counts per mode
+        useEffect(() => {
+          const MIN_H = { search: 3, display: 1, pmax: 5 };
+          const MIN_D = { search: 2, display: 1, pmax: 4 };
+          const minH = MIN_H[mode] || 1;
+          const minD = MIN_D[mode] || 1;
+          setHeadlines(h => {
+            if (mode === 'demand_gen') return h; // demand_gen uses its own state
+            return h.length >= minH ? h : [...h, ...Array(minH - h.length).fill('')];
+          });
+          setDescriptions(d => {
+            if (!NEEDS_DESCRIPTIONS.includes(mode)) return [''];
+            return d.length >= minD ? d : [...d, ...Array(minD - d.length).fill('')];
+          });
+        }, [mode]);
+
+        const handleImageFile = (key, file) => {
+          if (!file || !file.type.startsWith('image/')) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64 = reader.result.split(',')[1];
+            setImages(prev => ({ ...prev, [key]: { base64, name: file.name } }));
+          };
+          reader.readAsDataURL(file);
+        };
+
+        const handleSubmit = async () => {
+          setDStatus('loading'); setDError(''); setDResult(null);
+          try {
+            let body;
+
+            if (mode === 'demand_gen') {
+              // Demand Gen: dedicated body
+              body = {
+                mode: 'demand_gen', name: df.name, dailyBudget: df.dailyBudget, finalUrl: df.finalUrl,
+                adType: dgAdType, adName: dgAdName || undefined,
+                businessName: df.businessName, biddingGoal: dgBiddingGoal,
+                headlines: dgHeadlines.filter(h => h.trim()),
+                descriptions: dgDescriptions.filter(d => d.trim()),
+                callToActionText: df.callToActionText || undefined,
+                ...(dgUseCpa && dgTargetCpa && { targetCpa: dgTargetCpa }),
+                ...(dgProductFeed && df.merchantId && { merchantId: df.merchantId }),
+                ...(dgStartDate && { startDate: dgStartDate }),
+                ...(dgEndDate && { endDate: dgEndDate }),
+                ...(dgLogos.length && { logoBase64: dgLogos[0].base64 }),
+              };
+              if (dgAdType === 'image') {
+                if (dgMarketingImages.length) body.marketingImagesBase64 = dgMarketingImages.map(i => i.base64);
+                if (dgSquareImages.length) body.squareImagesBase64 = dgSquareImages.map(i => i.base64);
+              } else {
+                body.youtubeVideoIds = dgYoutubeIds.filter(id => id.trim());
+                body.longHeadlines = dgLongHeadlines.filter(h => h.trim());
+              }
+            } else if (mode === 'search') {
+              body = {
+                mode: 'search', name: df.name, dailyBudget: df.dailyBudget, finalUrl: df.finalUrl,
+                headlines: headlines.filter(h => h.trim()),
+                descriptions: descriptions.filter(d => d.trim()),
+                keywords: df.keywords.split(',').map(k => k.trim()).filter(Boolean),
+                ...(df.campaignId && { campaignId: df.campaignId }),
+                ...(df.adGroupName && { adGroupName: df.adGroupName }),
+              };
+            } else if (mode === 'display') {
+              body = {
+                mode: 'display', name: df.name, dailyBudget: df.dailyBudget, finalUrl: df.finalUrl,
+                headlines: headlines.filter(h => h.trim()),
+                longHeadline: df.longHeadline,
+                descriptions: descriptions.filter(d => d.trim()),
+                businessName: df.businessName,
+                ...(df.campaignId && { campaignId: df.campaignId }),
+                ...(images.marketing && { marketingImageBase64: images.marketing.base64 }),
+                ...(images.square && { squareImageBase64: images.square.base64 }),
+                ...(images.logo && { logoBase64: images.logo.base64 }),
+              };
+            } else if (mode === 'pmax') {
+              body = {
+                mode: 'pmax', name: df.name, dailyBudget: df.dailyBudget, finalUrl: df.finalUrl,
+                headlines: headlines.filter(h => h.trim()),
+                longHeadline: df.longHeadline,
+                descriptions: descriptions.filter(d => d.trim()),
+                businessName: df.businessName,
+                ...(images.logo && { logoBase64: images.logo.base64 }),
+                ...(images.marketing && { marketingImageBase64: images.marketing.base64 }),
+                ...(images.square && { squareImageBase64: images.square.base64 }),
+              };
+            } else {
+              // video, shopping (generic fallback)
+              body = { mode, name: df.name, dailyBudget: df.dailyBudget, finalUrl: df.finalUrl };
+              if (df.campaignId) body.campaignId = df.campaignId;
+              if (df.merchantId) body.merchantId = df.merchantId;
+              if (df.youtubeVideoId) {
+                body.youtubeVideoId = df.youtubeVideoId;
+                body.headline = df.videoHeadline;
+                body.description = df.videoDescription;
+              }
+            }
+
+            const res = await apiFetch(`${API}/google/creative/direct`, {
+              method: 'POST', body: JSON.stringify(body),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '등록 실패');
+            setDResult(data); setDStatus('success');
+          } catch (e) { setDError(e.message); setDStatus('error'); }
+        };
+
+        const minHeadlines = mode === 'pmax' ? 5 : 3;
+        const minDescriptions = mode === 'pmax' ? 4 : 2;
+        const validHeadlines = !NEEDS_HEADLINES.includes(mode) || headlines.filter(h => h.trim()).length >= minHeadlines;
+        const validDescriptions = !NEEDS_DESCRIPTIONS.includes(mode) || descriptions.filter(d => d.trim()).length >= minDescriptions;
+
+        // Demand Gen has its own validation
+        const dgValid = mode === 'demand_gen' ? (
+          df.name && df.finalUrl && df.businessName
+          && dgHeadlines.filter(h => h.trim()).length >= 1
+          && dgDescriptions.filter(d => d.trim()).length >= 1
+          && (dgAdType === 'video' ? dgYoutubeIds.filter(id => id.trim()).length >= 1 && dgLongHeadlines.filter(h => h.trim()).length >= 1 : true)
+        ) : true;
+
+        let isValid = false;
+        if (mode === 'demand_gen') {
+          isValid = dgValid;
+        } else if (mode === 'search') {
+          isValid = df.name && df.finalUrl && headlines.filter(h => h.trim()).length >= 3 && descriptions.filter(d => d.trim()).length >= 2;
+        } else if (mode === 'display') {
+          isValid = df.name && df.finalUrl && df.businessName && df.longHeadline && headlines.filter(h => h.trim()).length >= 1 && descriptions.filter(d => d.trim()).length >= 1;
+        } else if (mode === 'pmax') {
+          isValid = df.name && df.finalUrl && df.businessName && df.longHeadline && headlines.filter(h => h.trim()).length >= 5 && descriptions.filter(d => d.trim()).length >= 4;
+        } else {
+          // video, shopping (generic fallback)
+          isValid = df.name && df.finalUrl
+            && (!NEEDS_VIDEO.includes(mode) || df.youtubeVideoId)
+            && (!NEEDS_MERCHANT.includes(mode) || df.merchantId);
+        }
+
+        const ImageDropZone = ({ label, size, imgKey }) => (
+          <div className="flex-1">
+            <label className="block text-xs font-medium text-ppl-text mb-1.5">{label} ({size})</label>
+            {images[imgKey] ? (
+              <div className="flex items-center gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                <span className="text-xs text-emerald-700 truncate flex-1">{images[imgKey].name}</span>
+                <button onClick={() => setImages(prev => ({ ...prev, [imgKey]: null }))}
+                  className="text-emerald-400 hover:text-red-500 text-lg leading-none">×</button>
+              </div>
+            ) : (
+              <div
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => { e.preventDefault(); handleImageFile(imgKey, e.dataTransfer.files[0]); }}
+                onClick={() => { const inp = document.createElement('input'); inp.type='file'; inp.accept='image/*'; inp.onchange=e=>handleImageFile(imgKey,e.target.files[0]); inp.click(); }}
+                className="flex flex-col items-center justify-center h-24 rounded-xl border-2 border-dashed border-ppl-border bg-ppl-bg hover:bg-gray-50 hover:border-amber-300 cursor-pointer transition-all"
+              >
+                <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <p className="text-[10px] text-ppl-sub mt-1">{size}</p>
+              </div>
+            )}
+          </div>
+        );
+
+        let sectionNum = 1;
+
+        return (
+          <div className="max-w-2xl space-y-5">
+            {/* Campaign Type Selector */}
+            <div className="flex flex-wrap gap-1 bg-ppl-bg rounded-xl p-1 border border-ppl-border">
+              {MODES.map(m => (
+                <button key={m.id} onClick={() => setMode(m.id)}
+                  className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors ${mode === m.id ? 'bg-amber-500 text-white shadow-sm' : 'text-ppl-sub hover:text-ppl-text'}`}
+                  title={m.desc}>{m.label}</button>
+              ))}
+            </div>
+            <p className="text-xs text-ppl-sub -mt-3 ml-1">{MODES.find(m => m.id === mode)?.desc}</p>
+
+            {/* ══ DEMAND GEN DEDICATED FORM ══ */}
+            {mode === 'demand_gen' && (<>
+              {/* DG Section 1: 캠페인 설정 */}
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-indigo-500 text-white text-[10px] font-bold flex items-center justify-center">1</span>
+                  캠페인 설정
+                </p>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">캠페인 이름 *</label>
+                  <input type="text" maxLength={256} placeholder="디맨드젠 캠페인"
+                    value={df.name} onChange={e => set('name', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  <span className="text-[10px] text-ppl-sub">{df.name.length}/256</span>
+                </div>
+
+                {/* 제품 피드 */}
+                <div className="border border-ppl-border rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-ppl-text">제품 피드</span>
+                    <button onClick={() => setDgProductFeed(!dgProductFeed)}
+                      className={`w-10 h-5 rounded-full transition-colors relative ${dgProductFeed ? 'bg-indigo-500' : 'bg-gray-300'}`}>
+                      <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${dgProductFeed ? 'left-5' : 'left-0.5'}`} />
+                    </button>
+                  </div>
+                  {dgProductFeed && (
+                    <div>
+                      <label className="block text-xs font-medium text-ppl-text mb-1.5">Merchant Center ID</label>
+                      <input type="text" placeholder="예: 333560697"
+                        value={df.merchantId} onChange={e => set('merchantId', e.target.value)}
+                        className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                    </div>
+                  )}
+                </div>
+
+                {/* 캠페인 목표 */}
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-2">캠페인 목표 *</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { id: 'CONVERSIONS', label: '전환', desc: '전환 기반 입찰 전략' },
+                      { id: 'CLICKS', label: '클릭수', desc: '클릭당비용 기반 입찰' },
+                      { id: 'CONVERSION_VALUE', label: '전환 가치', desc: '전환 가치 최대화' },
+                    ].map(g => (
+                      <button key={g.id} onClick={() => setDgBiddingGoal(g.id)}
+                        className={`p-3 rounded-xl border-2 text-left transition-all ${dgBiddingGoal === g.id
+                          ? 'border-indigo-500 bg-indigo-50' : 'border-ppl-border hover:border-indigo-300'}`}>
+                        <p className="text-xs font-semibold text-ppl-text">{g.label}</p>
+                        <p className="text-[10px] text-ppl-sub mt-1">{g.desc}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 전환 목표 (전환 선택 시 — 라디오, 단일 선택) */}
+                {dgBiddingGoal === 'CONVERSIONS' && (
+                  <div className="border border-ppl-border rounded-xl p-4 space-y-3">
+                    <p className="text-xs font-semibold text-ppl-text">전환 목표</p>
+                    <div className="text-[10px] text-ppl-sub grid grid-cols-4 gap-2 pb-1 border-b border-ppl-border">
+                      <span>전환 목표</span><span>전환 소스</span><span>전환 액션</span><span>값</span>
+                    </div>
+                    {DG_CONVERSION_GOALS.map(g => (
+                      <label key={g.id} className={`grid grid-cols-4 gap-2 items-center p-3 rounded-lg border cursor-pointer transition-all ${
+                        dgConversionGoal === g.id ? 'border-indigo-400 bg-indigo-50' : 'border-ppl-border hover:border-indigo-200'}`}>
+                        <span className="flex items-center gap-2">
+                          <input type="radio" name="dgConvGoal" checked={dgConversionGoal === g.id}
+                            onChange={() => setDgConversionGoal(g.id)} />
+                          <span className="text-xs">{g.icon} {g.label}</span>
+                        </span>
+                        <span className="text-xs text-ppl-sub">{g.source}</span>
+                        <span className="text-xs text-ppl-sub">{g.actions}</span>
+                        <span className="text-xs text-ppl-sub">{g.value}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                {/* 타겟 전환당비용 (전환 선택 시) */}
+                {dgBiddingGoal === 'CONVERSIONS' && (
+                  <div className="border border-ppl-border rounded-xl p-4 space-y-3">
+                    <label className="flex items-center gap-2 text-xs font-medium text-ppl-text cursor-pointer">
+                      <input type="checkbox" checked={dgUseCpa} onChange={e => setDgUseCpa(e.target.checked)}
+                        className="rounded border-gray-300" />
+                      타겟 전환당비용 설정 (선택사항)
+                    </label>
+                    {dgUseCpa && (
+                      <div>
+                        <input type="number" min="1" placeholder="₩ 타겟 CPA"
+                          value={dgTargetCpa} onChange={e => setDgTargetCpa(e.target.value)}
+                          className="w-48 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 타겟 클릭당 비용 (클릭수 선택 시) */}
+                {dgBiddingGoal === 'CLICKS' && (
+                  <div className="border border-ppl-border rounded-xl p-4 space-y-3">
+                    <label className="flex items-center gap-2 text-xs font-medium text-ppl-text cursor-pointer">
+                      <input type="checkbox" checked={dgUseCpc} onChange={e => setDgUseCpc(e.target.checked)}
+                        className="rounded border-gray-300" />
+                      타겟 클릭당 비용 설정 (선택사항)
+                    </label>
+                    {dgUseCpc && (
+                      <div>
+                        <input type="number" min="1" placeholder="₩ 타겟 CPC"
+                          value={dgTargetCpc} onChange={e => setDgTargetCpc(e.target.value)}
+                          className="w-48 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 전환 목표 (전환 가치 선택 시 — 체크박스, 다중 선택) */}
+                {dgBiddingGoal === 'CONVERSION_VALUE' && (
+                  <div className="border border-ppl-border rounded-xl p-4 space-y-3">
+                    <p className="text-xs font-semibold text-ppl-text">전환 목표</p>
+                    <div className="text-[10px] text-ppl-sub grid grid-cols-4 gap-2 pb-1 border-b border-ppl-border">
+                      <span>전환 목표</span><span>전환 소스</span><span>전환 액션</span><span>값</span>
+                    </div>
+                    {DG_CONVERSION_GOALS.map(g => (
+                      <label key={g.id} className={`grid grid-cols-4 gap-2 items-center p-3 rounded-lg border cursor-pointer transition-all ${
+                        dgConversionGoals.includes(g.id) ? 'border-indigo-400 bg-indigo-50' : 'border-ppl-border hover:border-indigo-200'}`}>
+                        <span className="flex items-center gap-2">
+                          <input type="checkbox" checked={dgConversionGoals.includes(g.id)}
+                            onChange={e => {
+                              if (e.target.checked) setDgConversionGoals(prev => [...prev, g.id]);
+                              else setDgConversionGoals(prev => prev.filter(id => id !== g.id));
+                            }} className="rounded border-gray-300" />
+                          <span className="text-xs">{g.icon} {g.label}</span>
+                        </span>
+                        <span className="text-xs text-ppl-sub">{g.source}</span>
+                        <span className="text-xs text-ppl-sub">{g.actions}</span>
+                        <span className="text-xs text-ppl-sub">{g.value}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                {/* 예산 및 날짜 */}
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">일 예산 (₩) *</label>
+                    <input type="number" min="1" value={df.dailyBudget} onChange={e => set('dailyBudget', e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">시작일</label>
+                    <input type="date" value={dgStartDate} onChange={e => setDgStartDate(e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">종료일</label>
+                    <input type="date" value={dgEndDate} onChange={e => setDgEndDate(e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  </div>
+                </div>
+              </div>
+
+              {/* DG Section 2: 광고 유형 선택 */}
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-indigo-500 text-white text-[10px] font-bold flex items-center justify-center">2</span>
+                  광고 유형 선택
+                </p>
+                <div className="space-y-2">
+                  {[
+                    { id: 'image', label: '이미지 및 제품 광고', desc: '이미지 및 제품 에셋을 이용해 광고를 게재합니다.' },
+                    { id: 'video', label: '동영상 및 제품 광고', desc: '동영상 및 제품 에셋을 이용해 광고를 게재합니다.' },
+                  ].map(t => (
+                    <label key={t.id} className={`flex items-start gap-3 p-3 rounded-xl border-2 cursor-pointer transition-all ${
+                      dgAdType === t.id ? 'border-indigo-500 bg-indigo-50' : 'border-ppl-border hover:border-indigo-300'}`}>
+                      <input type="radio" name="dgAdType" checked={dgAdType === t.id}
+                        onChange={() => setDgAdType(t.id)} className="mt-0.5" />
+                      <div>
+                        <p className="text-xs font-semibold text-ppl-text">{t.label}</p>
+                        <p className="text-[10px] text-ppl-sub">{t.desc}</p>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* DG Section 3: 광고 이름 + 최종 URL */}
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-indigo-500 text-white text-[10px] font-bold flex items-center justify-center">3</span>
+                  광고 기본
+                </p>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">광고 이름</label>
+                  <input type="text" maxLength={255} placeholder="광고 1"
+                    value={dgAdName} onChange={e => setDgAdName(e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  <span className="text-[10px] text-ppl-sub">{dgAdName.length}/255</span>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">최종 URL *</label>
+                  <input type="url" placeholder="https://www.example.com"
+                    value={df.finalUrl} onChange={e => set('finalUrl', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                </div>
+              </div>
+
+              {/* DG Section 4: 미디어 */}
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-indigo-500 text-white text-[10px] font-bold flex items-center justify-center">4</span>
+                  미디어
+                </p>
+
+                {dgAdType === 'image' ? (<>
+                  {/* 이미지 (최대 20개) */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-xs font-medium text-ppl-text">이미지 * (최대 20개)</label>
+                      {dgMarketingImages.length < 20 && (
+                        <button onClick={() => { const inp = document.createElement('input'); inp.type='file'; inp.accept='image/*'; inp.multiple=true; inp.onchange=e=>{
+                          Array.from(e.target.files).forEach(file => {
+                            const reader = new FileReader(); reader.onload = () => {
+                              setDgMarketingImages(prev => prev.length < 20 ? [...prev, {base64: reader.result.split(',')[1], name: file.name}] : prev);
+                            }; reader.readAsDataURL(file);
+                          });
+                        }; inp.click(); }}
+                          className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">+ 추가</button>
+                      )}
+                    </div>
+                    {dgMarketingImages.length === 0 && (
+                      <div onClick={() => { const inp = document.createElement('input'); inp.type='file'; inp.accept='image/*'; inp.multiple=true; inp.onchange=e=>{
+                        Array.from(e.target.files).forEach(file => {
+                          const reader = new FileReader(); reader.onload = () => {
+                            setDgMarketingImages(prev => prev.length < 20 ? [...prev, {base64: reader.result.split(',')[1], name: file.name}] : prev);
+                          }; reader.readAsDataURL(file);
+                        });
+                      }; inp.click(); }}
+                        className="flex flex-col items-center justify-center h-28 rounded-xl border-2 border-dashed border-ppl-border bg-ppl-bg hover:bg-gray-50 hover:border-indigo-300 cursor-pointer transition-all">
+                        <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        <p className="text-xs text-ppl-sub mt-1">이미지를 업로드하세요 (필수)</p>
+                      </div>
+                    )}
+                    {dgMarketingImages.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {dgMarketingImages.map((img, i) => (
+                          <div key={i} className="flex items-center gap-1 px-2 py-1 bg-indigo-50 border border-indigo-200 rounded-lg">
+                            <span className="text-[10px] text-indigo-700 truncate max-w-[120px]">{img.name}</span>
+                            <button onClick={() => setDgMarketingImages(prev => prev.filter((_, j) => j !== i))}
+                              className="text-indigo-400 hover:text-red-500 text-sm leading-none">×</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>) : (<>
+                  {/* 동영상 (최대 5개) */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-xs font-medium text-ppl-text">YouTube 동영상 * (최대 5개)</label>
+                      {dgYoutubeIds.length < 5 && (
+                        <button onClick={() => setDgYoutubeIds([...dgYoutubeIds, ''])}
+                          className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">+ 추가</button>
+                      )}
+                    </div>
+                    {dgYoutubeIds.map((vid, i) => (
+                      <div key={i} className="flex items-center gap-2 mb-2">
+                        <input type="text" placeholder="YouTube 동영상 ID 또는 URL"
+                          value={vid} onChange={e => { const arr = [...dgYoutubeIds]; arr[i] = e.target.value; setDgYoutubeIds(arr); }}
+                          className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white font-mono" />
+                        {dgYoutubeIds.length > 1 && (
+                          <button onClick={() => setDgYoutubeIds(dgYoutubeIds.filter((_, j) => j !== i))}
+                            className="text-ppl-sub hover:text-red-500 text-lg leading-none">×</button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </>)}
+
+                {/* 로고 (최대 5개) */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-medium text-ppl-text">로고 * (최대 5개, 1200x1200 권장)</label>
+                    {dgLogos.length < 5 && (
+                      <button onClick={() => { const inp = document.createElement('input'); inp.type='file'; inp.accept='image/*'; inp.onchange=e=>{
+                        const file = e.target.files[0]; if (!file) return;
+                        const reader = new FileReader(); reader.onload = () => {
+                          setDgLogos(prev => prev.length < 5 ? [...prev, {base64: reader.result.split(',')[1], name: file.name}] : prev);
+                        }; reader.readAsDataURL(file);
+                      }; inp.click(); }}
+                        className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">+ 추가</button>
+                    )}
+                  </div>
+                  {dgLogos.length === 0 && (
+                    <div onClick={() => { const inp = document.createElement('input'); inp.type='file'; inp.accept='image/*'; inp.onchange=e=>{
+                      const file = e.target.files[0]; if (!file) return;
+                      const reader = new FileReader(); reader.onload = () => {
+                        setDgLogos(prev => [...prev, {base64: reader.result.split(',')[1], name: file.name}]);
+                      }; reader.readAsDataURL(file);
+                    }; inp.click(); }}
+                      className="flex flex-col items-center justify-center h-20 rounded-xl border-2 border-dashed border-ppl-border bg-ppl-bg hover:bg-gray-50 hover:border-indigo-300 cursor-pointer transition-all">
+                      <p className="text-xs text-ppl-sub">로고를 업로드하세요 (필수)</p>
+                    </div>
+                  )}
+                  {dgLogos.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {dgLogos.map((img, i) => (
+                        <div key={i} className="flex items-center gap-1 px-2 py-1 bg-indigo-50 border border-indigo-200 rounded-lg">
+                          <span className="text-[10px] text-indigo-700 truncate max-w-[120px]">{img.name}</span>
+                          <button onClick={() => setDgLogos(prev => prev.filter((_, j) => j !== i))}
+                            className="text-indigo-400 hover:text-red-500 text-sm leading-none">×</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* DG Section 5: 텍스트 */}
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-indigo-500 text-white text-[10px] font-bold flex items-center justify-center">5</span>
+                  텍스트
+                </p>
+
+                {/* 광고 제목 (최대 5개, 40자) */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-medium text-ppl-text">광고 제목 * (최대 5개, 40자)</label>
+                    {dgHeadlines.length < 5 && (
+                      <button onClick={() => setDgHeadlines([...dgHeadlines, ''])}
+                        className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">+ 광고 제목</button>
+                    )}
+                  </div>
+                  {dgHeadlines.map((h, i) => (
+                    <div key={i} className="flex items-center gap-2 mb-2">
+                      <input type="text" maxLength={40} placeholder="광고 제목"
+                        value={h} onChange={e => { const arr = [...dgHeadlines]; arr[i] = e.target.value; setDgHeadlines(arr); }}
+                        className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                      <span className="text-[10px] text-ppl-sub w-10 text-right">{h.length}/40</span>
+                      {dgHeadlines.length > 1 && (
+                        <button onClick={() => setDgHeadlines(dgHeadlines.filter((_, j) => j !== i))}
+                          className="text-ppl-sub hover:text-red-500 text-lg leading-none">×</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* 긴 광고 제목 (동영상 유형만, 최대 5개, 90자) */}
+                {dgAdType === 'video' && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-xs font-medium text-ppl-text">긴 광고 제목 * (최대 5개, 90자)</label>
+                      {dgLongHeadlines.length < 5 && (
+                        <button onClick={() => setDgLongHeadlines([...dgLongHeadlines, ''])}
+                          className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">+ 긴 광고 제목</button>
+                      )}
+                    </div>
+                    {dgLongHeadlines.map((h, i) => (
+                      <div key={i} className="flex items-center gap-2 mb-2">
+                        <input type="text" maxLength={90} placeholder="긴 광고 제목"
+                          value={h} onChange={e => { const arr = [...dgLongHeadlines]; arr[i] = e.target.value; setDgLongHeadlines(arr); }}
+                          className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                        <span className="text-[10px] text-ppl-sub w-10 text-right">{h.length}/90</span>
+                        {dgLongHeadlines.length > 1 && (
+                          <button onClick={() => setDgLongHeadlines(dgLongHeadlines.filter((_, j) => j !== i))}
+                            className="text-ppl-sub hover:text-red-500 text-lg leading-none">×</button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* 설명 (최대 5개, 90자) */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-medium text-ppl-text">설명 * (최대 5개, 90자)</label>
+                    {dgDescriptions.length < 5 && (
+                      <button onClick={() => setDgDescriptions([...dgDescriptions, ''])}
+                        className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">+ 설명</button>
+                    )}
+                  </div>
+                  {dgDescriptions.map((d, i) => (
+                    <div key={i} className="flex items-center gap-2 mb-2">
+                      <textarea rows={2} maxLength={90} placeholder="설명"
+                        value={d} onChange={e => { const arr = [...dgDescriptions]; arr[i] = e.target.value; setDgDescriptions(arr); }}
+                        className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white resize-none" />
+                      <span className="text-[10px] text-ppl-sub w-10 text-right">{d.length}/90</span>
+                      {dgDescriptions.length > 1 && (
+                        <button onClick={() => setDgDescriptions(dgDescriptions.filter((_, j) => j !== i))}
+                          className="text-ppl-sub hover:text-red-500 text-lg leading-none">×</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* CTA */}
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">클릭 유도문안 텍스트</label>
+                  <select value={df.callToActionText} onChange={e => set('callToActionText', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    {DG_CTA_OPTIONS.map(o => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 업체명 */}
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">업체명 * (25자)</label>
+                  <input type="text" maxLength={25} placeholder="업체명"
+                    value={df.businessName} onChange={e => set('businessName', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  <span className="text-[10px] text-ppl-sub">{df.businessName.length}/25</span>
+                </div>
+              </div>
+            </>)}
+
+            {/* ══ SEARCH DEDICATED FORM ══ */}
+            {mode === 'search' && (<>
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center">1</span>
+                  캠페인 설정
+                </p>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">캠페인명 *</label>
+                  <input type="text" placeholder="예: 봄_프로모션_검색광고"
+                    value={df.name} onChange={e => set('name', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">일 예산 (₩)</label>
+                    <input type="number" min="1" value={df.dailyBudget} onChange={e => set('dailyBudget', e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">광고 상태</label>
+                    <select value={df.adStatus} onChange={e => set('adStatus', e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                      <option value="PAUSED">일시정지 (PAUSED)</option>
+                      <option value="ACTIVE">활성 (ACTIVE)</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">기존 캠페인 사용 (선택)</label>
+                  <select value={df.campaignId} onChange={e => set('campaignId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    <option value="">새 캠페인 생성</option>
+                    {campaigns.filter(c => c.platform === 'google').map(c => (
+                      <option key={c.id} value={c.id}>{c.name} ({c.status})</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">광고그룹명</label>
+                  <input type="text" placeholder="예: 봄_프로모션_AdGroup"
+                    value={df.adGroupName} onChange={e => set('adGroupName', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center">2</span>
+                  키워드
+                </p>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">키워드 (쉼표 구분)</label>
+                  <textarea rows={3} placeholder="디스커버리, 아웃도어 패션, 디스커버리 익스페디션"
+                    value={df.keywords} onChange={e => set('keywords', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white resize-none" />
+                  <p className="text-[10px] text-ppl-sub mt-1">검색 캠페인에서 광고가 노출될 키워드를 입력하세요</p>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center">3</span>
+                  광고 문구 (RSA)
+                </p>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-medium text-ppl-text">광고 제목 * (최소 3개, 각 30자)</label>
+                    {headlines.length < 15 && (
+                      <button onClick={() => setHeadlines([...headlines, ''])}
+                        className="text-xs text-blue-600 hover:text-blue-700 font-medium">+ 추가</button>
+                    )}
+                  </div>
+                  {headlines.map((h, i) => (
+                    <div key={i} className="flex items-center gap-2 mb-2">
+                      <input type="text" maxLength={30} placeholder={`광고 제목 ${i+1}`}
+                        value={h} onChange={e => { const arr = [...headlines]; arr[i] = e.target.value; setHeadlines(arr); }}
+                        className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                      <span className="text-[10px] text-ppl-sub w-10 text-right">{h.length}/30</span>
+                      {headlines.length > 3 && (
+                        <button onClick={() => setHeadlines(headlines.filter((_, j) => j !== i))}
+                          className="text-ppl-sub hover:text-red-500 text-lg leading-none">×</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-medium text-ppl-text">설명 * (최소 2개, 각 90자)</label>
+                    {descriptions.length < 4 && (
+                      <button onClick={() => setDescriptions([...descriptions, ''])}
+                        className="text-xs text-blue-600 hover:text-blue-700 font-medium">+ 추가</button>
+                    )}
+                  </div>
+                  {descriptions.map((d, i) => (
+                    <div key={i} className="flex items-center gap-2 mb-2">
+                      <textarea rows={2} maxLength={90} placeholder={`설명 ${i+1}`}
+                        value={d} onChange={e => { const arr = [...descriptions]; arr[i] = e.target.value; setDescriptions(arr); }}
+                        className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white resize-none" />
+                      <span className="text-[10px] text-ppl-sub w-10 text-right">{d.length}/90</span>
+                      {descriptions.length > 2 && (
+                        <button onClick={() => setDescriptions(descriptions.filter((_, j) => j !== i))}
+                          className="text-ppl-sub hover:text-red-500 text-lg leading-none">×</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center">4</span>
+                  링크
+                </p>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">최종 URL *</label>
+                  <input type="url" placeholder="https://www.example.com"
+                    value={df.finalUrl} onChange={e => set('finalUrl', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                </div>
+              </div>
+            </>)}
+
+            {/* ══ DISPLAY DEDICATED FORM ══ */}
+            {mode === 'display' && (<>
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-green-500 text-white text-[10px] font-bold flex items-center justify-center">1</span>
+                  캠페인 설정
+                </p>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">캠페인명 *</label>
+                  <input type="text" placeholder="예: GDN_봄_프로모션"
+                    value={df.name} onChange={e => set('name', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">일 예산 (₩)</label>
+                    <input type="number" min="1" value={df.dailyBudget} onChange={e => set('dailyBudget', e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">광고 상태</label>
+                    <select value={df.adStatus} onChange={e => set('adStatus', e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                      <option value="PAUSED">일시정지 (PAUSED)</option>
+                      <option value="ACTIVE">활성 (ACTIVE)</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">기존 캠페인 사용 (선택)</label>
+                  <select value={df.campaignId} onChange={e => set('campaignId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    <option value="">새 캠페인 생성</option>
+                    {campaigns.filter(c => c.platform === 'google').map(c => (
+                      <option key={c.id} value={c.id}>{c.name} ({c.status})</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">비즈니스명 *</label>
+                  <input type="text" maxLength={25} placeholder="예: Discovery Expedition"
+                    value={df.businessName} onChange={e => set('businessName', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-green-500 text-white text-[10px] font-bold flex items-center justify-center">2</span>
+                  이미지
+                </p>
+                <p className="text-[10px] text-ppl-sub">반응형 디스플레이 광고에는 가로 이미지, 정사각형 이미지, 로고가 필요합니다.</p>
+                <div className="flex gap-4">
+                  <ImageDropZone label="가로 이미지" size="1200x628" imgKey="marketing" />
+                  <ImageDropZone label="정사각형 이미지" size="1200x1200" imgKey="square" />
+                  <ImageDropZone label="로고 (1:1)" size="128x128" imgKey="logo" />
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-green-500 text-white text-[10px] font-bold flex items-center justify-center">3</span>
+                  광고 문구
+                </p>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-medium text-ppl-text">광고 제목 * (최대 5개, 각 30자)</label>
+                    {headlines.length < 5 && (
+                      <button onClick={() => setHeadlines([...headlines, ''])}
+                        className="text-xs text-green-600 hover:text-green-700 font-medium">+ 추가</button>
+                    )}
+                  </div>
+                  {headlines.map((h, i) => (
+                    <div key={i} className="flex items-center gap-2 mb-2">
+                      <input type="text" maxLength={30} placeholder={`광고 제목 ${i+1}`}
+                        value={h} onChange={e => { const arr = [...headlines]; arr[i] = e.target.value; setHeadlines(arr); }}
+                        className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                      <span className="text-[10px] text-ppl-sub w-10 text-right">{h.length}/30</span>
+                      {headlines.length > 1 && (
+                        <button onClick={() => setHeadlines(headlines.filter((_, j) => j !== i))}
+                          className="text-ppl-sub hover:text-red-500 text-lg leading-none">×</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">긴 광고 제목 * (90자)</label>
+                  <input type="text" maxLength={90} placeholder="긴 광고 제목"
+                    value={df.longHeadline} onChange={e => set('longHeadline', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  <span className="text-[10px] text-ppl-sub">{df.longHeadline.length}/90</span>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-medium text-ppl-text">설명 * (최대 5개, 각 90자)</label>
+                    {descriptions.length < 5 && (
+                      <button onClick={() => setDescriptions([...descriptions, ''])}
+                        className="text-xs text-green-600 hover:text-green-700 font-medium">+ 추가</button>
+                    )}
+                  </div>
+                  {descriptions.map((d, i) => (
+                    <div key={i} className="flex items-center gap-2 mb-2">
+                      <textarea rows={2} maxLength={90} placeholder={`설명 ${i+1}`}
+                        value={d} onChange={e => { const arr = [...descriptions]; arr[i] = e.target.value; setDescriptions(arr); }}
+                        className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white resize-none" />
+                      <span className="text-[10px] text-ppl-sub w-10 text-right">{d.length}/90</span>
+                      {descriptions.length > 1 && (
+                        <button onClick={() => setDescriptions(descriptions.filter((_, j) => j !== i))}
+                          className="text-ppl-sub hover:text-red-500 text-lg leading-none">×</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-green-500 text-white text-[10px] font-bold flex items-center justify-center">4</span>
+                  링크
+                </p>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">최종 URL *</label>
+                  <input type="url" placeholder="https://www.example.com"
+                    value={df.finalUrl} onChange={e => set('finalUrl', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                </div>
+              </div>
+            </>)}
+
+            {/* ══ PMAX DEDICATED FORM ══ */}
+            {mode === 'pmax' && (<>
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-purple-500 text-white text-[10px] font-bold flex items-center justify-center">1</span>
+                  캠페인 설정
+                </p>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">캠페인명 *</label>
+                  <input type="text" placeholder="예: PMAX_봄_프로모션"
+                    value={df.name} onChange={e => set('name', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">일 예산 (₩)</label>
+                    <input type="number" min="1" value={df.dailyBudget} onChange={e => set('dailyBudget', e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">광고 상태</label>
+                    <select value={df.adStatus} onChange={e => set('adStatus', e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                      <option value="PAUSED">일시정지 (PAUSED)</option>
+                      <option value="ACTIVE">활성 (ACTIVE)</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">비즈니스명 *</label>
+                  <input type="text" placeholder="예: Discovery Expedition"
+                    value={df.businessName} onChange={e => set('businessName', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-purple-500 text-white text-[10px] font-bold flex items-center justify-center">2</span>
+                  이미지
+                </p>
+                <p className="text-[10px] text-ppl-sub">PMAX는 로고, 가로 이미지, 정사각형 이미지가 필요합니다.</p>
+                <div className="flex gap-4">
+                  <ImageDropZone label="로고" size="1200x1200" imgKey="logo" />
+                  <ImageDropZone label="마케팅 이미지" size="1200x628" imgKey="marketing" />
+                  <ImageDropZone label="정사각형" size="1200x1200" imgKey="square" />
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-purple-500 text-white text-[10px] font-bold flex items-center justify-center">3</span>
+                  광고 문구
+                </p>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-medium text-ppl-text">광고 제목 * (최소 5개, 각 30자)</label>
+                    {headlines.length < 15 && (
+                      <button onClick={() => setHeadlines([...headlines, ''])}
+                        className="text-xs text-purple-600 hover:text-purple-700 font-medium">+ 추가</button>
+                    )}
+                  </div>
+                  {headlines.map((h, i) => (
+                    <div key={i} className="flex items-center gap-2 mb-2">
+                      <input type="text" maxLength={30} placeholder={`광고 제목 ${i+1}`}
+                        value={h} onChange={e => { const arr = [...headlines]; arr[i] = e.target.value; setHeadlines(arr); }}
+                        className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                      <span className="text-[10px] text-ppl-sub w-10 text-right">{h.length}/30</span>
+                      {headlines.length > 5 && (
+                        <button onClick={() => setHeadlines(headlines.filter((_, j) => j !== i))}
+                          className="text-ppl-sub hover:text-red-500 text-lg leading-none">×</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">긴 광고 제목 * (90자)</label>
+                  <input type="text" maxLength={90} placeholder="긴 광고 제목"
+                    value={df.longHeadline} onChange={e => set('longHeadline', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  <span className="text-[10px] text-ppl-sub">{df.longHeadline.length}/90</span>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-medium text-ppl-text">설명 * (최소 4개, 각 90자)</label>
+                    {descriptions.length < 5 && (
+                      <button onClick={() => setDescriptions([...descriptions, ''])}
+                        className="text-xs text-purple-600 hover:text-purple-700 font-medium">+ 추가</button>
+                    )}
+                  </div>
+                  {descriptions.map((d, i) => (
+                    <div key={i} className="flex items-center gap-2 mb-2">
+                      <textarea rows={2} maxLength={90} placeholder={`설명 ${i+1}`}
+                        value={d} onChange={e => { const arr = [...descriptions]; arr[i] = e.target.value; setDescriptions(arr); }}
+                        className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white resize-none" />
+                      <span className="text-[10px] text-ppl-sub w-10 text-right">{d.length}/90</span>
+                      {descriptions.length > 4 && (
+                        <button onClick={() => setDescriptions(descriptions.filter((_, j) => j !== i))}
+                          className="text-ppl-sub hover:text-red-500 text-lg leading-none">×</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-purple-500 text-white text-[10px] font-bold flex items-center justify-center">4</span>
+                  링크
+                </p>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">최종 URL *</label>
+                  <input type="url" placeholder="https://www.example.com"
+                    value={df.finalUrl} onChange={e => set('finalUrl', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                </div>
+              </div>
+            </>)}
+
+            {/* ══ OTHER MODES (video, shopping) ══ */}
+            {!['search', 'display', 'demand_gen', 'pmax'].includes(mode) && (<>
+
+            {/* Section: Basic Info */}
+            <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+              <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center">{sectionNum++}</span>
+                기본 정보
+              </p>
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">캠페인명 *</label>
+                <input type="text" placeholder="예: 봄_프로모션_캠페인"
+                  value={df.name} onChange={e => set('name', e.target.value)}
+                  className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">일 예산 (₩)</label>
+                  <input type="number" min="1" value={df.dailyBudget} onChange={e => set('dailyBudget', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">광고 상태</label>
+                  <select value={df.adStatus} onChange={e => set('adStatus', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    <option value="PAUSED">일시정지 (PAUSED)</option>
+                    <option value="ACTIVE">활성 (ACTIVE)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Existing campaign (for non-PMAX) */}
+              {mode !== 'pmax' && (
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">기존 캠페인 사용 (선택)</label>
+                  <select value={df.campaignId} onChange={e => set('campaignId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    <option value="">새 캠페인 생성</option>
+                    {campaigns.filter(c => c.platform === 'google').map(c => (
+                      <option key={c.id} value={c.id}>{c.name} ({c.status})</option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-ppl-sub mt-1">선택하지 않으면 새 캠페인을 생성합니다</p>
+                </div>
+              )}
+
+              {/* Ad Group name */}
+              {mode !== 'pmax' && (
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">광고그룹명</label>
+                  <input type="text" placeholder="예: 봄_프로모션_AdGroup"
+                    value={df.adGroupName} onChange={e => set('adGroupName', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                </div>
+              )}
+
+              {/* Business name (display, demand_gen, pmax) */}
+              {NEEDS_BUSINESS_NAME.includes(mode) && (
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">비즈니스명 *</label>
+                  <input type="text" placeholder="예: Discovery Expedition"
+                    value={df.businessName} onChange={e => set('businessName', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                </div>
+              )}
+
+              {/* Keywords (search only) */}
+              {NEEDS_KEYWORDS.includes(mode) && (
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">키워드 (쉼표 구분)</label>
+                  <textarea rows={2} placeholder="디스커버리, 아웃도어 패션, 디스커버리 익스페디션"
+                    value={df.keywords} onChange={e => set('keywords', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white resize-none" />
+                </div>
+              )}
+
+              {/* Merchant ID (shopping only) */}
+              {NEEDS_MERCHANT.includes(mode) && (
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">Merchant Center ID *</label>
+                  <input type="text" placeholder="Google Merchant Center ID"
+                    value={df.merchantId} onChange={e => set('merchantId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  <p className="text-[10px] text-ppl-sub mt-1">쇼핑 광고는 Merchant Center 상품 피드에서 자동으로 소재가 생성됩니다</p>
+                </div>
+              )}
+
+              {/* YouTube Video ID (video only) */}
+              {NEEDS_VIDEO.includes(mode) && (
+                <>
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">YouTube 동영상 ID *</label>
+                    <input type="text" placeholder="예: dQw4w9WgXcQ (YouTube URL의 v= 뒤 부분)"
+                      value={df.youtubeVideoId} onChange={e => set('youtubeVideoId', e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white font-mono" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">광고 헤드라인</label>
+                    <input type="text" maxLength={30} placeholder="동영상 광고 헤드라인"
+                      value={df.videoHeadline} onChange={e => set('videoHeadline', e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">광고 설명</label>
+                    <textarea rows={2} maxLength={90} placeholder="동영상 광고 설명"
+                      value={df.videoDescription} onChange={e => set('videoDescription', e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white resize-none" />
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Section: Images (display, demand_gen, pmax) */}
+            {NEEDS_IMAGES.includes(mode) && (
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center">{sectionNum++}</span>
+                  이미지
+                </p>
+                <div className="flex gap-4">
+                  <ImageDropZone label="로고" size="1200x1200" imgKey="logo" />
+                  <ImageDropZone label="마케팅 이미지" size="1200x628" imgKey="marketing" />
+                  <ImageDropZone label="정사각형" size="1200x1200" imgKey="square" />
+                </div>
+              </div>
+            )}
+
+            {/* Section: Ad Copy (search, display, demand_gen, pmax) */}
+            {(NEEDS_HEADLINES.includes(mode) || NEEDS_DESCRIPTIONS.includes(mode)) && (
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center">{sectionNum++}</span>
+                  광고 문구
+                </p>
+
+                {NEEDS_HEADLINES.includes(mode) && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-xs font-medium text-ppl-text">Headlines * (최소 {minHeadlines}개, 각 30자)</label>
+                      {headlines.length < 15 && (
+                        <button onClick={() => setHeadlines([...headlines, ''])}
+                          className="text-xs text-amber-600 hover:text-amber-700 font-medium">+ 추가</button>
+                      )}
+                    </div>
+                    {headlines.map((h, i) => (
+                      <div key={i} className="flex items-center gap-2 mb-2">
+                        <input type="text" maxLength={30} placeholder={`Headline ${i+1}`}
+                          value={h} onChange={e => { const arr = [...headlines]; arr[i] = e.target.value; setHeadlines(arr); }}
+                          className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                        <span className="text-[10px] text-ppl-sub w-8 text-right">{h.length}/30</span>
+                        {headlines.length > minHeadlines && (
+                          <button onClick={() => setHeadlines(headlines.filter((_, j) => j !== i))}
+                            className="text-ppl-sub hover:text-red-500 text-lg leading-none">×</button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {NEEDS_LONG_HEADLINE.includes(mode) && (
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">Long Headline * (90자)</label>
+                    <input type="text" maxLength={90} placeholder="긴 헤드라인 (최대 90자)"
+                      value={df.longHeadline} onChange={e => set('longHeadline', e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                    <span className="text-[10px] text-ppl-sub">{df.longHeadline.length}/90</span>
+                  </div>
+                )}
+
+                {NEEDS_DESCRIPTIONS.includes(mode) && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-xs font-medium text-ppl-text">Descriptions * (최소 {minDescriptions}개, 각 90자)</label>
+                      {descriptions.length < 5 && (
+                        <button onClick={() => setDescriptions([...descriptions, ''])}
+                          className="text-xs text-amber-600 hover:text-amber-700 font-medium">+ 추가</button>
+                      )}
+                    </div>
+                    {descriptions.map((d, i) => (
+                      <div key={i} className="flex items-center gap-2 mb-2">
+                        <textarea rows={2} maxLength={90} placeholder={`Description ${i+1}`}
+                          value={d} onChange={e => { const arr = [...descriptions]; arr[i] = e.target.value; setDescriptions(arr); }}
+                          className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white resize-none" />
+                        <span className="text-[10px] text-ppl-sub w-8 text-right">{d.length}/90</span>
+                        {descriptions.length > minDescriptions && (
+                          <button onClick={() => setDescriptions(descriptions.filter((_, j) => j !== i))}
+                            className="text-ppl-sub hover:text-red-500 text-lg leading-none">×</button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {mode === 'demand_gen' && (
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-text mb-1.5">CTA 텍스트 (선택)</label>
+                    <input type="text" placeholder="예: 자세히 알아보기"
+                      value={df.callToActionText} onChange={e => set('callToActionText', e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Section: Link */}
+            <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+              <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center">{sectionNum++}</span>
+                링크
+              </p>
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">웹사이트 URL (랜딩 페이지) *</label>
+                <input type="url" placeholder="https://www.example.com"
+                  value={df.finalUrl} onChange={e => set('finalUrl', e.target.value)}
+                  className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+              </div>
+            </div>
+
+            </>)}
+            {/* ══ END OTHER MODES ══ */}
+
+            {/* Status messages */}
+            {dStatus === 'success' && dResult && (
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-sm text-emerald-700">
+                Google {MODES.find(m => m.id === mode)?.label} 광고 등록 완료! 캠페인 ID: {dResult.campaignId}
+                {dResult.adGroupId && ` / 광고그룹 ID: ${dResult.adGroupId}`}
+                <span className="block text-xs mt-1 text-emerald-600">Google Ads 대시보드에서 확인하세요.</span>
+              </div>
+            )}
+            {dStatus === 'error' && dError && (
+              <div className="p-4 bg-red-50 border border-red-200 rounded-2xl text-sm text-red-700">{dError}</div>
+            )}
+
+            {/* Submit */}
+            <button onClick={handleSubmit} disabled={!isValid || dStatus === 'loading'}
+              className={`w-full py-3 rounded-xl text-sm font-semibold transition-colors ${
+                isValid && dStatus !== 'loading'
+                  ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-sm'
+                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+              }`}>
+              {dStatus === 'loading' ? '등록 중...' : `Google에 ${MODES.find(m => m.id === mode)?.label} 광고 등록`}
+            </button>
+            <p className="text-xs text-center text-ppl-sub">* 표시 항목은 필수입니다. 광고는 기본적으로 일시정지 상태로 등록됩니다.</p>
+          </div>
+        );
+      };
+
+      // ─── Google Creative Settings Panel ───
+      const GoogleCreativeSettingsPanel = ({ campaigns }) => (
+        <div className="space-y-6">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <h2 className="text-2xl font-bold text-ppl-text">Creative Upload</h2>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-600">Google 전용</span>
+            </div>
+            <p className="text-sm text-ppl-sub">Search / Display / Video / Demand Gen / Shopping / PMAX</p>
+          </div>
+          <GoogleDirectUploadForm campaigns={campaigns} />
+        </div>
+      );
+
     // ═══ MAIN APP ════════════════════════════════════════════
     function App() {
       const [overview, setOverview] = useState(null);
@@ -2010,7 +3307,11 @@
             <div className="flex-1 overflow-y-auto scrollbar-thin">
               {activeView === 'meta-creative' ? (
                 <div className="px-8 py-8">
-                  <MetaCreativeSettingsPanel campaigns={campaigns} />
+                  {selectedPlatform === 'google' ? (
+                    <GoogleCreativeSettingsPanel campaigns={campaigns} />
+                  ) : (
+                    <MetaCreativeSettingsPanel campaigns={campaigns} />
+                  )}
                 </div>
               ) : activeView === 'creatives' ? (
                 <div className="px-8 py-8">

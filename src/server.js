@@ -15,7 +15,7 @@ import db, { initDatabase } from './utils/db.js';
 import logger from './utils/logger.js';
 import DataCollector from './analytics/collector.js';
 import { getOptimizer, getPipeline, getTemplateEngine, getABTestEngine, getAudienceManager } from './utils/services.js';
-import { getMetaClient } from './utils/clients.js';
+import { getMetaClient, getGoogleClient } from './utils/clients.js';
 import crypto from 'crypto';
 import { getAdapter } from './utils/platform-adapter.js';
 import { startSlackBot } from './slack-bot.js';
@@ -51,7 +51,7 @@ const envStatus = validateEnv();
 
 const app = express();
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.API_PORT || 3099;
 const API_TOKEN = process.env.API_AUTH_TOKEN || '';
@@ -130,7 +130,20 @@ function validateRequired(body, fields) {
 function safeError(res, err, context = 'operation') {
   // FacebookRequestError: err.response = parsed error body from Meta API
   const metaBody = err?.response && typeof err.response === 'object' ? err.response : {};
-  const detail = metaBody.message || err?.message || String(err);
+  // Google Ads API: err.errors is array of {error_code, message, location}
+  const googleErrors = Array.isArray(err?.errors) ? err.errors : [];
+
+  let detail;
+  if (googleErrors.length > 0) {
+    detail = googleErrors.map(e => {
+      const errorType = e.error_code ? Object.entries(e.error_code).map(([k,v]) => `${k}:${v}`).join(',') : '';
+      return errorType ? `[${errorType}] ${e.message}` : e.message;
+    }).join('; ');
+  } else {
+    const raw = metaBody.message || err?.message || String(err);
+    detail = typeof raw === 'object' ? JSON.stringify(raw) : raw;
+  }
+
   const code = metaBody.code || metaBody.error_subcode || err?.status || null;
   const errorType = metaBody.type || null;
   const traceId = metaBody.fbtrace_id || null;
@@ -138,6 +151,7 @@ function safeError(res, err, context = 'operation') {
   logger.error(`${context} failed`, {
     error: detail, code, errorType, traceId,
     metaBody: JSON.stringify(metaBody),
+    googleErrors: googleErrors.length ? JSON.stringify(googleErrors) : undefined,
     stack: err.stack,
   });
 
@@ -615,6 +629,170 @@ app.post('/api/meta/creative/direct', async (req, res) => {
     res.json({ success: true, creativeId, adId: ad.id, metaCreativeId: adCreative.id });
   } catch (e) {
     safeError(res, e, 'Meta direct creative');
+  }
+});
+
+// ─── Google Ads Creative Endpoints ────────────────────────────
+
+/** GET /api/google/campaigns/:campaignId/adgroups — list ad groups for a campaign */
+app.get('/api/google/campaigns/:campaignId/adgroups', async (req, res) => {
+  try {
+    const google = getGoogleClient();
+    if (!google._configured) return res.status(503).json({ error: 'Google Ads client not configured' });
+    const adGroups = await google.getAdGroups(req.params.campaignId);
+    res.json(adGroups);
+  } catch (e) {
+    safeError(res, e, 'Google adgroups');
+  }
+});
+
+/**
+ * POST /api/google/creative/direct — Create Google ad
+ *
+ * Body.mode: 'search' | 'display' | 'video' | 'demand_gen' | 'shopping' | 'pmax'
+ */
+app.post('/api/google/creative/direct', async (req, res) => {
+  try {
+    const google = getGoogleClient();
+    if (!google._configured) return res.status(503).json({ error: 'Google Ads client not configured' });
+
+    const { mode, name, dailyBudget = 1, finalUrl, campaignId: existingCampaignId } = req.body;
+    if (!name) return res.status(400).json({ error: 'name 필수' });
+
+    // ── PMAX: uses separate mutateResources flow ──
+    if (mode === 'pmax') {
+      const { businessName, headlines, longHeadline, descriptions,
+              logoBase64, marketingImageBase64, squareImageBase64 } = req.body;
+      if (!businessName || !finalUrl) return res.status(400).json({ error: 'businessName, finalUrl 필수' });
+
+      const result = await google.createPmaxCampaign({
+        name, dailyBudget: Number(dailyBudget), businessName,
+        logoBase64, marketingImageBase64, squareImageBase64,
+        finalUrls: [finalUrl], headlines, longHeadline, descriptions,
+      });
+      broadcastToClients('creative_registered', { campaignId: result.id, type: 'pmax' });
+      return res.json({ success: true, campaignId: result.id, name: result.name, type: 'pmax' });
+    }
+
+    // ── DEMAND_GEN: uses separate mutateResources flow ──
+    if (mode === 'demand_gen') {
+      const { biddingGoal, targetCpa, merchantId, startDate, endDate, adGroupName,
+              adType, adName, businessName, headlines, descriptions, callToActionText,
+              logoBase64, marketingImagesBase64, squareImagesBase64,
+              youtubeVideoIds, longHeadlines } = req.body;
+      if (!businessName || !finalUrl) return res.status(400).json({ error: 'businessName, finalUrl 필수' });
+      if (!headlines?.length || !descriptions?.length) return res.status(400).json({ error: 'headlines, descriptions 필수' });
+
+      const result = await google.createDemandGenCampaign({
+        name, dailyBudget: Number(dailyBudget), biddingGoal, businessName,
+        targetCpaMicros: targetCpa ? Math.round(Number(targetCpa) * 1_000_000) : undefined,
+        merchantId, startDate, endDate, adGroupName,
+        adType: adType || 'image', adName,
+        finalUrls: [finalUrl], headlines, descriptions, callToActionText,
+        logoBase64,
+        marketingImagesBase64: marketingImagesBase64 || [],
+        squareImagesBase64: squareImagesBase64 || [],
+        youtubeVideoIds: youtubeVideoIds || [],
+        longHeadlines: longHeadlines || [],
+      });
+
+      broadcastToClients('creative_registered', { campaignId: result.id, type: 'demand_gen' });
+      return res.json({ success: true, campaignId: result.id, name: result.name, type: 'demand_gen', adType: result.adType });
+    }
+
+    // ── Common: campaign type mapping ──
+    const CHANNEL_MAP = {
+      search: 'SEARCH', display: 'DISPLAY', video: 'VIDEO',
+      shopping: 'SHOPPING',
+    };
+    const ADGROUP_TYPE_MAP = {
+      search: 'SEARCH_STANDARD', display: 'DISPLAY_STANDARD',
+      video: 'VIDEO_RESPONSIVE',
+      shopping: 'SHOPPING_PRODUCT_ADS',
+    };
+    const BIDDING_MAP = {
+      search: 'MAXIMIZE_CONVERSIONS', display: 'MAXIMIZE_CONVERSIONS',
+      video: 'MAXIMIZE_CONVERSIONS',
+      shopping: 'MAXIMIZE_CLICKS',
+    };
+
+    const channelType = CHANNEL_MAP[mode];
+    if (!channelType) return res.status(400).json({ error: `지원하지 않는 mode: ${mode}` });
+    if (!finalUrl && mode !== 'shopping') return res.status(400).json({ error: 'finalUrl 필수' });
+
+    // Step 1: Campaign
+    let campaignId = existingCampaignId;
+    if (!campaignId) {
+      const campaign = await google.createCampaign({
+        name, dailyBudget: Number(dailyBudget), channelType,
+        status: 'PAUSED', biddingStrategy: BIDDING_MAP[mode],
+        ...(mode === 'shopping' && req.body.merchantId && { merchantId: req.body.merchantId }),
+      });
+      campaignId = campaign.id;
+    }
+
+    // Step 2: Ad Group
+    const adGroupName = req.body.adGroupName || `${name}_AdGroup`;
+    const adGroup = await google.createAdGroup({
+      campaignId, name: adGroupName, status: 'PAUSED',
+      adGroupType: ADGROUP_TYPE_MAP[mode],
+    });
+
+    let adResult;
+
+    // Step 3: Ad creation per type
+    if (mode === 'search') {
+      const { headlines, descriptions, keywords = [] } = req.body;
+      if (!headlines?.length || !descriptions?.length) return res.status(400).json({ error: 'headlines, descriptions 필수' });
+      if (keywords.length > 0) {
+        const kwList = keywords.map(k => typeof k === 'string' ? { text: k, matchType: 'BROAD' } : k);
+        await google.addKeywords(adGroup.id, kwList);
+      }
+      adResult = await google.createResponsiveSearchAd({
+        adGroupId: adGroup.id, headlines, descriptions, finalUrls: [finalUrl],
+      });
+
+    } else if (mode === 'display') {
+      const { headlines, longHeadline, descriptions, businessName,
+              marketingImageBase64, squareImageBase64, logoBase64 } = req.body;
+      if (!headlines?.length || !longHeadline || !descriptions?.length || !businessName) {
+        return res.status(400).json({ error: 'headlines, longHeadline, descriptions, businessName 필수' });
+      }
+      // Upload image assets if provided
+      const marketingImageAssets = marketingImageBase64
+        ? [await google.createImageAsset({ name: `${name}_marketing`, imageBase64: marketingImageBase64 })] : [];
+      const squareImageAssets = squareImageBase64
+        ? [await google.createImageAsset({ name: `${name}_square`, imageBase64: squareImageBase64 })] : [];
+      const logoImageAssets = logoBase64
+        ? [await google.createImageAsset({ name: `${name}_logo`, imageBase64: logoBase64 })] : [];
+
+      adResult = await google.createResponsiveDisplayAd({
+        adGroupId: adGroup.id, headlines, longHeadline, descriptions, businessName,
+        finalUrls: [finalUrl], marketingImageAssets, squareImageAssets,
+        squareLogoImageAssets: logoImageAssets,
+      });
+
+    } else if (mode === 'video') {
+      const { youtubeVideoId, headline, description } = req.body;
+      if (!youtubeVideoId) return res.status(400).json({ error: 'youtubeVideoId 필수' });
+      // Create YouTube video asset first
+      const videoAssetName = await google.createYouTubeVideoAsset({ videoId: youtubeVideoId, name: `${name}_video` });
+      adResult = await google.createVideoAd({
+        adGroupId: adGroup.id,
+        videoId: videoAssetName.split('/').pop(), // asset ID
+        headline: headline || name,
+        description: description || '',
+        finalUrls: [finalUrl],
+      });
+
+    } else if (mode === 'shopping') {
+      adResult = await google.createShoppingProductAd({ adGroupId: adGroup.id });
+    }
+
+    broadcastToClients('creative_registered', { campaignId, adGroupId: adGroup.id, type: mode });
+    res.json({ success: true, campaignId, adGroupId: adGroup.id, type: mode });
+  } catch (e) {
+    safeError(res, e, 'Google direct creative');
   }
 });
 

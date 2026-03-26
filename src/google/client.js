@@ -78,12 +78,20 @@ export class GoogleAdsClient extends BaseAdsClient {
     }));
   }
 
-  /** Create a search campaign with budget */
+  /**
+   * Create a campaign with budget.
+   * Supports: SEARCH, DISPLAY, VIDEO, DEMAND_GEN, SHOPPING, PERFORMANCE_MAX
+   *
+   * @param {Object} params
+   * @param {string} params.channelType - SEARCH | DISPLAY | VIDEO | DEMAND_GEN | SHOPPING
+   * @param {string} [params.merchantId] - Required for SHOPPING campaigns (Google Merchant Center ID)
+   */
   async createCampaign({
     name, dailyBudget,
     channelType = 'SEARCH',
     status = 'PAUSED',
     biddingStrategy = 'MAXIMIZE_CONVERSIONS',
+    merchantId,
   }) {
     this._ensureConfigured();
     // Step 1: Create campaign budget
@@ -94,17 +102,42 @@ export class GoogleAdsClient extends BaseAdsClient {
       explicitly_shared: false,
     }]), 'createBudget');
 
-    // Step 2: Create campaign
-    const campaignResult = await this._withTimeout(this.customer.campaigns.create([{
+    // Step 2: Build campaign object
+    const campaignObj = {
       name,
       status: enums.CampaignStatus[status],
       advertising_channel_type: enums.AdvertisingChannelType[channelType],
       campaign_budget: budgetResult.results[0].resource_name,
-      bidding_strategy_type: enums.BiddingStrategyType[biddingStrategy],
-    }]), 'createCampaign');
+      contains_eu_political_advertising: enums.EuPoliticalAdvertisingStatus.DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING,
+    };
+
+    // Bidding strategy: VIDEO uses TARGET_CPM or TARGET_CPV, others use smart bidding objects
+    if (channelType === 'VIDEO') {
+      // VIDEO campaigns: use target_cpv (cost per view) by default
+      campaignObj.target_cpv = {};
+    } else if (biddingStrategy === 'MAXIMIZE_CONVERSIONS') {
+      campaignObj.maximize_conversions = {};
+    } else if (biddingStrategy === 'MAXIMIZE_CONVERSION_VALUE') {
+      campaignObj.maximize_conversion_value = {};
+    } else if (biddingStrategy === 'MAXIMIZE_CLICKS') {
+      campaignObj.maximize_clicks = {};
+    } else if (biddingStrategy === 'TARGET_CPA') {
+      campaignObj.target_cpa = {};
+    } else {
+      campaignObj.bidding_strategy_type = enums.BiddingStrategyType[biddingStrategy];
+    }
+
+    // Shopping requires merchant_id
+    if (channelType === 'SHOPPING' && merchantId) {
+      campaignObj.shopping_setting = { merchant_id: Number(merchantId) };
+    }
+
+    const campaignResult = await this._withTimeout(
+      this.customer.campaigns.create([campaignObj]), 'createCampaign'
+    );
 
     const campaignId = campaignResult.results[0].resource_name.split('/').pop();
-    logger.info('Google campaign created', { id: campaignId, name });
+    logger.info('Google campaign created', { id: campaignId, name, channelType });
     return { id: campaignId, name, dailyBudget };
   }
 
@@ -425,28 +458,193 @@ export class GoogleAdsClient extends BaseAdsClient {
     return { id: campaignId, name, dailyBudget, resourceName: campaignResourceName, result };
   }
 
+  // ─── Demand Gen Campaign ──────────────────────────────────
+
+  /**
+   * Create a Demand Gen campaign with ad group + ad.
+   *
+   * Two-phase approach:
+   * Phase 1: mutateResources → Budget + Campaign + Ad Group (atomic)
+   * Phase 2: Upload image/video assets individually, then create ad via ads.create
+   *
+   * Supports two ad types:
+   * - 'image': demand_gen_multi_asset_ad
+   * - 'video': demand_gen_video_responsive_ad
+   */
+  async createDemandGenCampaign({
+    // Campaign
+    name, dailyBudget = 1, biddingGoal = 'CONVERSIONS',
+    targetCpaMicros, merchantId, startDate, endDate,
+    // Ad Group
+    adGroupName,
+    // Ad (common)
+    adType = 'image', adName, businessName, finalUrls,
+    headlines = [], descriptions = [], callToActionText,
+    logoBase64,
+    // Image ad type
+    marketingImagesBase64 = [], squareImagesBase64 = [],
+    // Video ad type
+    youtubeVideoIds = [], longHeadlines = [],
+  }) {
+    this._ensureConfigured();
+
+    // ── Phase 1: Create Campaign + Ad Group via mutateResources ──
+    const budgetTemp = `customers/${this.customerId}/campaignBudgets/-1`;
+    const campaignTemp = `customers/${this.customerId}/campaigns/-2`;
+    const adGroupTemp = `customers/${this.customerId}/adGroups/-3`;
+
+    const biddingConfig = biddingGoal === 'CLICKS'
+      ? { maximize_clicks: {} }
+      : biddingGoal === 'CONVERSION_VALUE'
+        ? { maximize_conversion_value: {} }
+        : targetCpaMicros
+          ? { maximize_conversions: { target_cpa_micros: targetCpaMicros } }
+          : { maximize_conversions: {} };
+
+    // Phase 1a: Budget + Campaign (mutateResources)
+    const phase1Mutations = [
+      {
+        entity: 'campaign_budget',
+        operation: 'create',
+        resource: {
+          resource_name: budgetTemp,
+          name: `${name}_budget`,
+          amount_micros: Math.round(dailyBudget * 1_000_000),
+          delivery_method: enums.BudgetDeliveryMethod.STANDARD,
+          explicitly_shared: false,
+        },
+      },
+      {
+        entity: 'campaign',
+        operation: 'create',
+        resource: {
+          resource_name: campaignTemp,
+          name,
+          status: enums.CampaignStatus.PAUSED,
+          advertising_channel_type: enums.AdvertisingChannelType.DEMAND_GEN,
+          campaign_budget: budgetTemp,
+          ...biddingConfig,
+          contains_eu_political_advertising: enums.EuPoliticalAdvertisingStatus.DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING,
+          ...(startDate && { start_date: startDate }),
+          ...(endDate && { end_date: endDate }),
+          ...(merchantId && { shopping_setting: { merchant_id: Number(merchantId) } }),
+        },
+      },
+    ];
+
+    const phase1Result = await this._withTimeout(
+      this.customer.mutateResources(phase1Mutations),
+      'createDemandGenCampaign_phase1'
+    );
+
+    const campaignResourceName = phase1Result.mutate_operation_responses[1].campaign_result?.resource_name;
+    const campaignId = campaignResourceName?.split('/').pop();
+
+    // Phase 1b: Ad Group (separate create — Demand Gen auto-assigns type)
+    const adGroupResult = await this._withTimeout(
+      this.customer.adGroups.create([{
+        campaign: campaignResourceName,
+        name: adGroupName || `${name}_AdGroup`,
+        status: enums.AdGroupStatus.PAUSED,
+      }]),
+      'createDemandGenCampaign_adGroup'
+    );
+    const adGroupResourceName = adGroupResult.results[0].resource_name;
+    const adGroupId = adGroupResourceName.split('/').pop();
+
+    logger.info('Demand Gen campaign + ad group created', { campaignId, adGroupId });
+
+    // ── Phase 2: Upload assets individually, then create ad ──
+    const logoAssetNames = [];
+    if (logoBase64) {
+      const res = await this.createImageAsset({ name: `${name}_logo`, imageBase64: logoBase64 });
+      logoAssetNames.push(res);
+    }
+
+    const marketingAssetNames = [];
+    for (const [i, base64] of marketingImagesBase64.entries()) {
+      const res = await this.createImageAsset({ name: `${name}_img_${i}`, imageBase64: base64 });
+      marketingAssetNames.push(res);
+    }
+
+    const squareAssetNames = [];
+    for (const [i, base64] of squareImagesBase64.entries()) {
+      const res = await this.createImageAsset({ name: `${name}_sq_${i}`, imageBase64: base64 });
+      squareAssetNames.push(res);
+    }
+
+    const videoAssetNames = [];
+    for (const [i, videoId] of youtubeVideoIds.entries()) {
+      const res = await this.createYouTubeVideoAsset({ videoId, name: `${name}_vid_${i}` });
+      videoAssetNames.push(res);
+    }
+
+    // Build the ad object
+    const adObj = {
+      ad_group: adGroupResourceName,
+      status: enums.AdGroupAdStatus.PAUSED,
+      ad: {
+        ...(adName && { name: adName }),
+        final_urls: finalUrls,
+      },
+    };
+
+    if (adType === 'video') {
+      adObj.ad.demand_gen_video_responsive_ad = {
+        headlines: headlines.map(text => ({ text })),
+        long_headlines: longHeadlines.map(text => ({ text })),
+        descriptions: descriptions.map(text => ({ text })),
+        business_name: businessName,
+        ...(callToActionText && { call_to_action_text: callToActionText }),
+        ...(videoAssetNames.length && { videos: videoAssetNames.map(a => ({ asset: a })) }),
+        ...(logoAssetNames.length && { logo_images: logoAssetNames.map(a => ({ asset: a })) }),
+      };
+    } else {
+      adObj.ad.demand_gen_multi_asset_ad = {
+        headlines: headlines.map(text => ({ text })),
+        descriptions: descriptions.map(text => ({ text })),
+        business_name: businessName,
+        ...(callToActionText && { call_to_action_text: callToActionText }),
+        ...(marketingAssetNames.length && { marketing_images: marketingAssetNames.map(a => ({ asset: a })) }),
+        ...(squareAssetNames.length && { square_marketing_images: squareAssetNames.map(a => ({ asset: a })) }),
+        ...(logoAssetNames.length && { logo_images: logoAssetNames.map(a => ({ asset: a })) }),
+      };
+    }
+
+    await this._withTimeout(
+      this.customer.adGroupAds.create([adObj]),
+      'createDemandGenCampaign_ad'
+    );
+
+    logger.info('Google Demand Gen campaign created (PAUSED)', { id: campaignId, name, adType, dailyBudget });
+    return { id: campaignId, name, dailyBudget, adType, adGroupId, resourceName: campaignResourceName };
+  }
+
   // ─── Ad Group & Ad Management ──────────────────────────────
 
-  /** Create an ad group */
-  async createAdGroup({ campaignId, name, cpcBidMicros, status = 'PAUSED' }) {
+  /**
+   * Create an ad group.
+   * @param {string} [adGroupType] - SEARCH_STANDARD | DISPLAY_STANDARD | VIDEO_RESPONSIVE | SHOPPING_PRODUCT_ADS
+   */
+  async createAdGroup({ campaignId, name, cpcBidMicros, status = 'PAUSED', adGroupType = 'SEARCH_STANDARD' }) {
     this._ensureConfigured();
-    const result = await this._withTimeout(this.customer.adGroups.create({
+    const result = await this._withTimeout(this.customer.adGroups.create([{
       campaign: `customers/${this.customerId}/campaigns/${campaignId}`,
       name,
       status: enums.AdGroupStatus[status],
-      cpc_bid_micros: cpcBidMicros || 1_000_000, // Default 1 unit
-      type: enums.AdGroupType.SEARCH_STANDARD,
-    }), 'createAdGroup');
+      cpc_bid_micros: cpcBidMicros || 1_000_000,
+      type: enums.AdGroupType[adGroupType],
+    }]), 'createAdGroup');
 
     const adGroupId = result.results[0].resource_name.split('/').pop();
-    logger.info('Google ad group created', { id: adGroupId, name });
+    logger.info('Google ad group created', { id: adGroupId, name, type: adGroupType });
     return { id: adGroupId, name };
   }
 
   /** Create a responsive search ad */
   async createResponsiveSearchAd({ adGroupId, headlines, descriptions, finalUrls }) {
     this._ensureConfigured();
-    const result = await this._withTimeout(this.customer.ads.create({
+    const result = await this._withTimeout(this.customer.adGroupAds.create([{
       ad_group: `customers/${this.customerId}/adGroups/${adGroupId}`,
       ad: {
         responsive_search_ad: {
@@ -456,10 +654,168 @@ export class GoogleAdsClient extends BaseAdsClient {
         final_urls: finalUrls,
       },
       status: enums.AdGroupAdStatus.PAUSED,
-    }), 'createAd');
+    }]), 'createAd');
 
     logger.info('Google responsive search ad created', { adGroupId });
     return result;
+  }
+
+  /**
+   * Create a responsive display ad (for DISPLAY campaigns).
+   * @param {Object} params
+   * @param {string} params.adGroupId
+   * @param {string[]} params.headlines - Short headlines (max 5, each 30 chars)
+   * @param {string} params.longHeadline - Long headline (max 90 chars)
+   * @param {string[]} params.descriptions - Descriptions (max 5, each 90 chars)
+   * @param {string} params.businessName
+   * @param {string[]} params.finalUrls
+   * @param {string[]} [params.marketingImageAssets] - Resource names of marketing images
+   * @param {string[]} [params.squareImageAssets] - Resource names of square images
+   * @param {string[]} [params.logoImageAssets] - Resource names of logo images
+   */
+  async createResponsiveDisplayAd({ adGroupId, headlines, longHeadline, descriptions, businessName, finalUrls,
+                                     marketingImageAssets = [], squareImageAssets = [], logoImageAssets = [], squareLogoImageAssets = [] }) {
+    this._ensureConfigured();
+    const result = await this._withTimeout(this.customer.adGroupAds.create([{
+      ad_group: `customers/${this.customerId}/adGroups/${adGroupId}`,
+      ad: {
+        responsive_display_ad: {
+          headlines: headlines.map(h => ({ text: h })),
+          long_headline: { text: longHeadline },
+          descriptions: descriptions.map(d => ({ text: d })),
+          business_name: businessName,
+          ...(marketingImageAssets.length && { marketing_images: marketingImageAssets.map(a => ({ asset: a })) }),
+          ...(squareImageAssets.length && { square_marketing_images: squareImageAssets.map(a => ({ asset: a })) }),
+          ...(logoImageAssets.length && { logo_images: logoImageAssets.map(a => ({ asset: a })) }),
+          ...(squareLogoImageAssets.length && { square_logo_images: squareLogoImageAssets.map(a => ({ asset: a })) }),
+        },
+        final_urls: finalUrls,
+      },
+      status: enums.AdGroupAdStatus.PAUSED,
+    }]), 'createResponsiveDisplayAd');
+
+    logger.info('Google responsive display ad created', { adGroupId });
+    return result;
+  }
+
+  /**
+   * Create a video ad (for VIDEO campaigns).
+   * @param {Object} params
+   * @param {string} params.adGroupId
+   * @param {string} params.videoId - YouTube video ID (e.g., 'dQw4w9WgXcQ')
+   * @param {string} params.headline - Ad headline
+   * @param {string} [params.description] - Ad description
+   * @param {string[]} params.finalUrls
+   * @param {string} [params.companionBannerAsset] - Companion banner image asset resource name
+   */
+  async createVideoAd({ adGroupId, videoId, headline, description = '', finalUrls, companionBannerAsset }) {
+    this._ensureConfigured();
+    const result = await this._withTimeout(this.customer.adGroupAds.create([{
+      ad_group: `customers/${this.customerId}/adGroups/${adGroupId}`,
+      ad: {
+        video_ad: {
+          video: { asset: `customers/${this.customerId}/assets/${videoId}` },
+          in_stream: {
+            action_headline: headline,
+            ...(companionBannerAsset && { companion_banner: { asset: companionBannerAsset } }),
+          },
+        },
+        final_urls: finalUrls,
+        ...(headline && { headlines: [{ text: headline }] }),
+        ...(description && { descriptions: [{ text: description }] }),
+      },
+      status: enums.AdGroupAdStatus.PAUSED,
+    }]), 'createVideoAd');
+
+    logger.info('Google video ad created', { adGroupId, videoId });
+    return result;
+  }
+
+  /**
+   * Create a Demand Gen multi-asset ad.
+   * @param {Object} params
+   * @param {string} params.adGroupId
+   * @param {string[]} params.headlines - Headlines (max 5)
+   * @param {string[]} params.descriptions - Descriptions (max 5)
+   * @param {string} params.businessName
+   * @param {string[]} params.finalUrls
+   * @param {string[]} [params.marketingImageAssets] - Marketing image asset resource names
+   * @param {string[]} [params.squareImageAssets] - Square image asset resource names
+   * @param {string[]} [params.logoImageAssets] - Logo image asset resource names
+   * @param {string} [params.callToActionText] - CTA text
+   */
+  async createDemandGenAd({ adGroupId, headlines, descriptions, businessName, finalUrls,
+                             marketingImageAssets = [], squareImageAssets = [], logoImageAssets = [],
+                             callToActionText }) {
+    this._ensureConfigured();
+    const result = await this._withTimeout(this.customer.adGroupAds.create([{
+      ad_group: `customers/${this.customerId}/adGroups/${adGroupId}`,
+      ad: {
+        demand_gen_multi_asset_ad: {
+          headlines: headlines.map(h => ({ text: h })),
+          descriptions: descriptions.map(d => ({ text: d })),
+          business_name: businessName,
+          ...(callToActionText && { call_to_action_text: callToActionText }),
+          ...(marketingImageAssets.length && { marketing_images: marketingImageAssets.map(a => ({ asset: a })) }),
+          ...(squareImageAssets.length && { square_marketing_images: squareImageAssets.map(a => ({ asset: a })) }),
+          ...(logoImageAssets.length && { logo_images: logoImageAssets.map(a => ({ asset: a })) }),
+        },
+        final_urls: finalUrls,
+      },
+      status: enums.AdGroupAdStatus.PAUSED,
+    }]), 'createDemandGenAd');
+
+    logger.info('Google demand gen ad created', { adGroupId });
+    return result;
+  }
+
+  /**
+   * Create a shopping product ad (for SHOPPING campaigns).
+   * Shopping ads are auto-populated from Merchant Center feed — no creative fields needed.
+   */
+  async createShoppingProductAd({ adGroupId }) {
+    this._ensureConfigured();
+    const result = await this._withTimeout(this.customer.adGroupAds.create([{
+      ad_group: `customers/${this.customerId}/adGroups/${adGroupId}`,
+      ad: { shopping_product_ad: {} },
+      status: enums.AdGroupAdStatus.PAUSED,
+    }]), 'createShoppingProductAd');
+
+    logger.info('Google shopping product ad created', { adGroupId });
+    return result;
+  }
+
+  /**
+   * Upload an image asset and return its resource name.
+   * Used by Display/DemandGen campaigns that need image assets.
+   */
+  async createImageAsset({ name, imageBase64 }) {
+    this._ensureConfigured();
+    const result = await this._withTimeout(this.customer.assets.create([{
+      name,
+      type: enums.AssetType.IMAGE,
+      image_asset: { data: Buffer.from(imageBase64, 'base64') },
+    }]), 'createImageAsset');
+
+    const resourceName = result.results[0].resource_name;
+    logger.info('Google image asset created', { name, resourceName });
+    return resourceName;
+  }
+
+  /**
+   * Create a YouTube video asset from a YouTube video ID.
+   */
+  async createYouTubeVideoAsset({ videoId, name }) {
+    this._ensureConfigured();
+    const result = await this._withTimeout(this.customer.assets.create([{
+      name: name || `video_${videoId}`,
+      type: enums.AssetType.YOUTUBE_VIDEO,
+      youtube_video_asset: { youtube_video_id: videoId },
+    }]), 'createYouTubeVideoAsset');
+
+    const resourceName = result.results[0].resource_name;
+    logger.info('YouTube video asset created', { videoId, resourceName });
+    return resourceName;
   }
 
   /** Add keywords to an ad group */
@@ -474,6 +830,27 @@ export class GoogleAdsClient extends BaseAdsClient {
     const result = await this._withTimeout(this.customer.adGroupCriteria.create(operations), 'addKeywords');
     logger.info(`Added ${keywords.length} keywords to ad group ${adGroupId}`);
     return result;
+  }
+
+  /** List ad groups for a campaign */
+  async getAdGroups(campaignId) {
+    this._ensureConfigured();
+    const safeCampaignId = String(campaignId).replace(/\D/g, '');
+    if (!safeCampaignId) throw new Error('Invalid campaign ID');
+
+    const rows = await this._withTimeout(this.customer.query(`
+      SELECT ad_group.id, ad_group.name, ad_group.status
+      FROM ad_group
+      WHERE campaign.id = ${safeCampaignId}
+        AND ad_group.status IN ('ENABLED', 'PAUSED')
+      ORDER BY ad_group.name
+    `), 'getAdGroups');
+
+    return rows.map(row => ({
+      id: String(row.ad_group.id),
+      name: row.ad_group.name,
+      status: row.ad_group.status,
+    }));
   }
 
   // ─── Reporting / Insights ──────────────────────────────────

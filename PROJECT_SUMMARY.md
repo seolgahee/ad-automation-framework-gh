@@ -708,8 +708,13 @@ PMAX는 Meta/NaverGFA와 근본적으로 구조가 다름:
 | **2단계: 소재 세팅** | | |
 | PMAX 캠페인+소재 일괄 생성 | ✅ | mutateResources 원자적 생성 성공 |
 | PMAX 캠페인 삭제 (REMOVED) | ✅ | 즉시 삭제 확인 |
-| RSA 생성 테스트 | ⬜ | Standard 광고용, 추후 진행 |
-| 캠페인+광고그룹+키워드+RSA 전체 플로우 | ⬜ | Standard 광고용, 추후 진행 |
+| Search: 캠페인+광고그룹+키워드+RSA | ✅ | 4단계 모두 성공 (캠페인 ID: 23689723392) |
+| Demand Gen 캠페인+소재 일괄 생성 | ✅ | 2단계 방식 (Budget+Campaign → Assets → Ad) 성공 |
+| Demand Gen UI 세팅 폼 | ✅ | 캠페인 목표/제품 피드/광고 유형(이미지/동영상)/소재 등록 |
+| Video 캠페인 생성 | ❌ 차단 | Developer Token 권한 부족 (MUTATE_NOT_ALLOWED) |
+| Display: 캠페인+광고그룹+에셋+반응형 디스플레이 | ✅ | 4단계 모두 성공 (캠페인 ID: 23689757277) |
+| Google 광고 세팅 UI — 전용 폼 4개 | ✅ | Search(파랑)/Display(초록)/DemandGen(남색)/PMAX(보라) 전용 폼 완성 |
+| Google 광고 세팅 UI — Video/Shopping | ⬜ 보류 | Video: Developer Token 권한, Shopping: GMC ID 필요 |
 | **3단계: Alerts + Slack Bot** | | |
 | Slack Bot Token 전환 | ✅ | Webhook → Bot Token, 삭제 가능 |
 | Slack 알림 전송 + 삭제 | ✅ | 전송/삭제 모두 확인, 현재 일시정지 중 |
@@ -720,6 +725,80 @@ PMAX는 Meta/NaverGFA와 근본적으로 구조가 다름:
 | Creatives 성과 수치 정합성 | ⬜ | |
 | PMAX 구조 분석 + View 개선 방향 | ⬜ | |
 | Google 이미지 URL 파이프라인 설계 | ⬜ | |
+
+### 2026-03-27 Google 광고 세팅 개발 로그
+
+#### 캠페인 타입별 API 생성 방식 (검증 완료)
+
+| 캠페인 타입 | 생성 방식 | Ad Group Type | Ad 생성 | 상태 |
+|---|---|---|---|---|
+| **PMAX** | `mutateResources` 원자적 일괄 | Asset Group (자동) | asset_group_asset 링크 | ✅ |
+| **Demand Gen** | Phase1: `mutateResources`(Budget+Campaign) → Phase2: `adGroups.create` → `assets.create` → `adGroupAds.create` | 타입 지정 불가 (Google 자동) | `demand_gen_multi_asset_ad` 또는 `demand_gen_video_responsive_ad` | ✅ |
+| **Search** | `createCampaign` → `createAdGroup(SEARCH_STANDARD)` → `addKeywords` → `adGroupAds.create(RSA)` | SEARCH_STANDARD | responsive_search_ad | ✅ |
+| **Display** | `createCampaign` → `createAdGroup(DISPLAY_STANDARD)` → `createImageAsset` → `adGroupAds.create(RDA)` | DISPLAY_STANDARD | responsive_display_ad (square_logo_images 사용) | ✅ |
+| **Video** | ❌ 모든 방식 실패 (`mutateResources`, `campaigns.create`) | - | - | ❌ Developer Token 권한 필요 |
+| **Shopping** | `createCampaign(merchantId)` → `createAdGroup` → `createShoppingProductAd` | SHOPPING_PRODUCT_ADS | shopping_product_ad (빈 구조, MC 자동) | ⬜ GMC ID 필요 |
+
+#### Google 광고 세팅 전용 UI 폼 구성
+
+| 캠페인 타입 | 테마 색상 | 섹션 구성 |
+|---|---|---|
+| **Search** | 파란색 | 캠페인 설정 → 키워드 → 광고 문구(RSA: 제목 3+/30자, 설명 2+/90자) → 링크 |
+| **Display** | 초록색 | 캠페인 설정(+비즈니스명) → 이미지(가로+정사각형+로고) → 광고 문구(제목 5/30자, 긴제목/90자, 설명 5/90자) → 링크 |
+| **Demand Gen** | 남색 | 캠페인 설정(목표/피드/CPA/날짜) → 광고 유형(이미지/동영상) → 미디어(이미지20개/동영상5개+로고5개) → 텍스트(제목40자/설명90자/CTA/업체명25자) → 링크 |
+| **PMAX** | 보라색 | 캠페인 설정(+비즈니스명) → 이미지(로고+마케팅+정사각형) → 광고 문구(제목 5+/30자, 긴제목/90자, 설명 4+/90자) → 링크 |
+| **Video** | - | 보류 (Developer Token 권한) |
+| **Shopping** | - | 보류 (GMC ID 필요) |
+
+#### google-ads-api 라이브러리 공통 규칙 (모든 캠페인 타입)
+
+1. **모든 `.create()` 메서드는 배열 필수** — `campaigns.create([...])`, `adGroups.create([...])`, `adGroupAds.create([...])`, `assets.create([...])`
+2. **`ads.create()` 없음** — `adGroupAds.create()` 사용해야 함
+3. **`contains_eu_political_advertising` 필수** — 모든 캠페인 생성 시 EU 정치 광고 선언 필요
+
+#### Display 개발 시 발견된 API 규칙
+
+1. **`square_marketing_images` 필수** — 최소 1개 (정사각형 이미지)
+2. **로고는 `square_logo_images` 필드 사용** — 128x128 1:1 비율. `logo_images`는 가로형(4:1) 로고용
+3. **1200x1200 이미지는 `logo_images`에 사용 불가** — `media_upload_error: 11 (aspect ratio mismatch)` 발생
+
+#### Search 개발 시 발견된 API 규칙
+
+1. **`adGroups.create()` 배열 필수** — 단일 객체 전달 시 `entities.map is not a function` 에러
+2. **`adGroupAds.create()` 배열 필수** — `ads.create()`는 존재하지 않음
+3. **`campaigns.create()` 배열 필수** — google-ads-api 라이브러리 공통 규칙
+
+#### Demand Gen 개발 시 발견된 API 규칙
+
+1. **Ad Group에 `type` 지정 불가** — Demand Gen은 Google이 자동 할당. `DISPLAY_STANDARD` 지정 시 `context_error` 발생
+2. **`ads.create()` 메서드 없음** — `adGroupAds.create([...])` 배열로 전달해야 함
+3. **`adGroups.create()`도 배열** — 단일 객체 전달 시 `entities.map is not a function` 에러
+4. **이미지 에셋은 별도 업로드** — `mutateResources`에 이미지+광고를 함께 넣으면 `duplicate assets` 에러
+5. **텍스트는 Ad에 인라인** — PMAX와 달리 별도 text asset 생성 불필요, `{ text: '...' }` 직접 전달
+6. **headline 40자** (Search 30자와 다름), **업체명 25자**
+
+#### Video 캠페인 차단 상세
+
+- **에러**: `mutate_error: 9 (MUTATE_NOT_ALLOWED)` — `mutateResources`, `campaigns.create` 모두 실패
+- **시도한 방법**: `target_cpv`, `target_cpm`, `maximize_conversions`, `VIDEO_ACTION` sub-type — 전부 실패
+- **원인 추정**: Developer Token이 Basic Access 수준으로, VIDEO 캠페인 API 생성 권한 없음
+- **해결 방법**: Google Ads API 센터에서 Standard Access 승인 요청 필요 (2~7일 소요)
+- **관련 스크립트**: `scripts/test-video-creation.js` (단계별 fallback 테스트)
+- **향후 작업**: 승인 후 스크립트 재실행 → 성공하는 방식 확인 → `createVideoCampaign()` 구현 → UI 연동
+
+#### 테스트 스크립트 목록
+
+| 스크립트 | 용도 |
+|---|---|
+| `scripts/test-pmax-creation.js` | PMAX 캠페인+소재 일괄 생성 (✅ 검증 완료) |
+| `scripts/test-standard-creation.js` | Search 캠페인+RSA 전체 플로우 (✅ 검증 완료) |
+| `scripts/test-display-creation.js` | Display 캠페인+반응형 디스플레이 광고 (✅ 검증 완료) |
+| `scripts/test-demandgen-creation.js` | Demand Gen 단계별 검증 (✅ 4단계 모두 성공) |
+| `scripts/test-demandgen-ui-api.js` | Demand Gen API 엔드포인트 검증 (✅ 성공) |
+| `scripts/test-video-creation.js` | Video 캠페인 생성 시도 (❌ 권한 차단) |
+| `scripts/_delete-test-campaign.js` | 테스트 캠페인 삭제 유틸 |
+
+---
 
 ### 발견 이슈
 
@@ -766,3 +845,6 @@ PMAX는 Meta/NaverGFA와 근본적으로 구조가 다름:
 - [x] 소재(Ad) 레벨 데이터 수집 — Meta `getAdInsights` + Google `getAdInsights` (ad_group_ad + PMAX asset_group 병행) 구현 완료
 - [ ] Google standard ad(DISPLAY/SEARCH) 소재 데이터 0건 원인 — 운영 중단/예산 미배정인지, API 이슈인지 Google Ads 대시보드에서 확인 필요
 - [ ] 분석적 질문 대응을 위한 LLM 연동 검토
+- [ ] Google Video 캠페인 API 생성 — Developer Token Standard Access 승인 후 진행 (`scripts/test-video-creation.js` 재실행)
+- [ ] Google Shopping 캠페인 세팅 — GMC(Merchant Center) ID 확인 후 테스트
+- [ ] Google Search/Display 캠페인 세팅 — 테스트 스크립트 실행 + Demand Gen 수준 UI 개선

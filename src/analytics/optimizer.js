@@ -160,32 +160,55 @@ export class Optimizer {
   async generateReport(days = 7) {
     const summary = this.getSummary(days);
     const trends = this.getTrends();
-    const totalSpend = summary.reduce((s, c) => s + c.total_spend, 0);
-    const totalConversions = summary.reduce((s, c) => s + c.total_conversions, 0);
-    const overallROAS = totalSpend > 0
-      ? summary.reduce((s, c) => s + c.total_value, 0) / totalSpend
-      : 0;
+
+    // Only include campaigns with spend > 0
+    const activeSummary = summary.filter(c => c.total_spend > 0);
+    const totalSpend = activeSummary.reduce((s, c) => s + c.total_spend, 0);
+    const totalConversions = activeSummary.reduce((s, c) => s + c.total_conversions, 0);
+    const totalValue = activeSummary.reduce((s, c) => s + c.total_value, 0);
+    const overallROAS = totalSpend > 0 ? totalValue / totalSpend : 0;
+    const overallCPA = totalConversions > 0 ? totalSpend / totalConversions : 0;
+    const roasTarget = parseFloat(process.env.ALERT_ROAS_THRESHOLD || '1.5');
 
     const trendMap = Object.fromEntries(trends.map(t => [t.campaignId, t]));
 
-    let report = `📊 *${days}일간 광고 성과 리포트*\n\n`;
-    report += `총 지출: ₩${krwFmt.format(totalSpend)}\n`;
-    report += `총 전환: ${totalConversions}건\n`;
-    report += `평균 ROAS: ${overallROAS.toFixed(2)}\n\n`;
+    let report = `📊 최근 ${days}일 성과 요약\n\n`;
+    report += `• 총 지출: ₩${krwFmt.format(Math.round(totalSpend))}\n`;
+    report += `• 전환수: ${Math.round(totalConversions)}건\n`;
+    report += `• ROAS: ${overallROAS.toFixed(2)} (목표 ${roasTarget} 대비 ${overallROAS >= roasTarget ? '+' : ''}${((overallROAS / roasTarget - 1) * 100).toFixed(0)}%)\n`;
+    report += `• CPA: ₩${krwFmt.format(Math.round(overallCPA))}\n`;
+    report += `• 구매전환값: ₩${krwFmt.format(Math.round(totalValue))}\n\n`;
 
     const byPlatform = { meta: [], google: [], tiktok: [] };
-    summary.forEach(c => byPlatform[c.platform]?.push(c));
+    activeSummary.forEach(c => byPlatform[c.platform]?.push(c));
 
+    // Platform comparison
     const platformLabels = { meta: 'Meta', google: 'Google', tiktok: 'TikTok' };
+    const platformROAS = {};
     for (const [platform, campaigns] of Object.entries(byPlatform)) {
       if (campaigns.length === 0) continue;
-      report += `*${platformLabels[platform] || platform} Ads*\n`;
+      const pSpend = campaigns.reduce((s, c) => s + c.total_spend, 0);
+      const pValue = campaigns.reduce((s, c) => s + c.total_value, 0);
+      platformROAS[platform] = pSpend > 0 ? pValue / pSpend : 0;
+
+      report += `[${platformLabels[platform]}] ROAS ${platformROAS[platform].toFixed(2)} | ₩${krwFmt.format(Math.round(pSpend))} 지출\n`;
       for (const c of campaigns) {
         const t = trendMap[c.id];
         const arrow = t?.trend === 'improving' ? '📈' : t?.trend === 'declining' ? '📉' : '➡️';
-        report += `${arrow} ${c.name}: ROAS ${c.roas.toFixed(2)} | CPA ₩${krwFmt.format(Math.round(c.cpa))} | ₩${krwFmt.format(c.total_spend)} spent\n`;
+        report += `  ${arrow} ${c.name}\n     ROAS ${c.roas.toFixed(2)} | CPA ₩${krwFmt.format(Math.round(c.cpa))} | ₩${krwFmt.format(Math.round(c.total_spend))}\n`;
       }
       report += '\n';
+    }
+
+    // Cross-platform insight
+    const platforms = Object.entries(platformROAS).filter(([, r]) => r > 0);
+    if (platforms.length >= 2) {
+      platforms.sort((a, b) => b[1] - a[1]);
+      const best = platforms[0], worst = platforms[platforms.length - 1];
+      if (best[1] > worst[1] && worst[1] > 0) {
+        const diff = ((best[1] / worst[1] - 1) * 100).toFixed(0);
+        report += `${platformLabels[best[0]]} 캠페인 ROAS가 ${platformLabels[worst[0]]} 대비 ${diff}% 높습니다.`;
+      }
     }
 
     return report;

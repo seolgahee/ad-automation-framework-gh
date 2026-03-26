@@ -971,9 +971,9 @@
         return acc;
       }, []), [timeline]);
 
-      const handleSend = async () => {
-        if (!inputValue.trim()) return;
-        const userText = inputValue.trim();
+      const handleSend = async (directMessage) => {
+        const userText = (directMessage || inputValue).trim();
+        if (!userText) return;
         setChatHistory(prev => [...prev, { role: 'user', text: userText }]);
         setInputValue('');
         try {
@@ -1986,7 +1986,7 @@
                       {msg.role === 'user' ? (
                         <p className="text-base leading-relaxed">{msg.text}</p>
                       ) : (
-                        <p className="text-base leading-relaxed text-ppl-sub">Processing: "{msg.text}"</p>
+                        <pre className="text-sm leading-relaxed text-ppl-sub whitespace-pre-wrap font-sans">{msg.text}</pre>
                       )}
                     </ChatMessage>
                   ))}
@@ -2006,7 +2006,7 @@
                     value={inputValue}
                     onChange={e => setInputValue(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleSend()}
-                    placeholder="Ask about your ad performance..."
+                    placeholder="예: 성과 보여줘, 캠페인 목록, 최적화 추천..."
                     className="flex-1 bg-transparent text-sm placeholder:text-gray-400 focus:outline-none"
                   />
                   <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-ppl-border text-xs text-ppl-sub cursor-pointer hover:bg-ppl-hover transition-colors">
@@ -2019,6 +2019,17 @@
                   >
                     {Icons.send}
                   </button>
+                </div>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {['성과 보여줘', '캠페인 목록', '예산 늘려줘', '최적화 추천', '캠페인 일시정지', '알림 확인'].map(cmd => (
+                    <button
+                      key={cmd}
+                      onClick={() => handleSend(cmd)}
+                      className="px-3 py-1.5 text-xs rounded-full border border-ppl-border bg-white text-ppl-sub hover:bg-ppl-teal hover:text-white hover:border-ppl-teal transition-colors"
+                    >
+                      {cmd}
+                    </button>
+                  ))}
                 </div>
               </div>
             </div>

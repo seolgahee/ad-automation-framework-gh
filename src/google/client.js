@@ -87,21 +87,21 @@ export class GoogleAdsClient extends BaseAdsClient {
   }) {
     this._ensureConfigured();
     // Step 1: Create campaign budget
-    const budgetResult = await this._withTimeout(this.customer.campaignBudgets.create({
+    const budgetResult = await this._withTimeout(this.customer.campaignBudgets.create([{
       name: `${name}_budget`,
       amount_micros: Math.round(dailyBudget * 1_000_000),
       delivery_method: enums.BudgetDeliveryMethod.STANDARD,
       explicitly_shared: false,
-    }), 'createBudget');
+    }]), 'createBudget');
 
     // Step 2: Create campaign
-    const campaignResult = await this._withTimeout(this.customer.campaigns.create({
+    const campaignResult = await this._withTimeout(this.customer.campaigns.create([{
       name,
       status: enums.CampaignStatus[status],
       advertising_channel_type: enums.AdvertisingChannelType[channelType],
       campaign_budget: budgetResult.results[0].resource_name,
       bidding_strategy_type: enums.BiddingStrategyType[biddingStrategy],
-    }), 'createCampaign');
+    }]), 'createCampaign');
 
     const campaignId = campaignResult.results[0].resource_name.split('/').pop();
     logger.info('Google campaign created', { id: campaignId, name });
@@ -140,6 +140,289 @@ export class GoogleAdsClient extends BaseAdsClient {
       status: enums.CampaignStatus[status],
     }), 'setCampaignStatus');
     logger.info('Google campaign status updated', { campaignId, status });
+  }
+
+  // ─── PMAX Campaign & Asset Group Management ─────────────────
+
+  /**
+   * Create a full PMAX campaign with all required assets in one mutate call.
+   *
+   * PMAX requires: budget + campaign + business name asset + logo asset + asset group
+   * Uses temporary resource names for atomic creation.
+   *
+   * @param {Object} params
+   * @param {string} params.name - Campaign name
+   * @param {number} params.dailyBudget - Daily budget in KRW (default 1)
+   * @param {string} params.businessName - Business name for brand guidelines
+   * @param {string} params.logoBase64 - Square logo image (base64, min 128x128)
+   * @param {string} params.marketingImageBase64 - Landscape image (base64, 1200x628)
+   * @param {string} params.squareImageBase64 - Square image (base64, 1200x1200)
+   * @param {string[]} params.finalUrls - Landing page URLs
+   * @param {string[]} params.headlines - Headline texts (min 3, max 30 chars)
+   * @param {string} params.longHeadline - Long headline (max 90 chars)
+   * @param {string[]} params.descriptions - Description texts (min 2, max 90 chars)
+   */
+  async createPmaxCampaign({
+    name, dailyBudget = 1,
+    biddingStrategy = 'MAXIMIZE_CONVERSIONS',
+    businessName, logoBase64, marketingImageBase64, squareImageBase64,
+    finalUrls, headlines = [], longHeadline, descriptions = [],
+  }) {
+    this._ensureConfigured();
+
+    // Use temporary resource names for atomic mutate
+    const budgetTemp = `customers/${this.customerId}/campaignBudgets/-1`;
+    const campaignTemp = `customers/${this.customerId}/campaigns/-2`;
+    const businessNameAssetTemp = `customers/${this.customerId}/assets/-3`;
+    const logoAssetTemp = `customers/${this.customerId}/assets/-4`;
+    const assetGroupTemp = `customers/${this.customerId}/assetGroups/-5`;
+    const marketingImageTemp = `customers/${this.customerId}/assets/-50`;
+    const squareImageTemp = `customers/${this.customerId}/assets/-51`;
+    const longHeadlineTemp = `customers/${this.customerId}/assets/-52`;
+
+    const biddingConfig = biddingStrategy === 'MAXIMIZE_CONVERSION_VALUE'
+      ? { maximize_conversion_value: {} }
+      : { maximize_conversions: {} };
+
+    // Build mutate operations using google-ads-api format:
+    // { entity: string, operation: 'create', resource: {...} }
+    const mutations = [
+      // 1. Campaign Budget
+      {
+        entity: 'campaign_budget',
+        operation: 'create',
+        resource: {
+          resource_name: budgetTemp,
+          name: `${name}_budget`,
+          amount_micros: Math.round(dailyBudget * 1_000_000),
+          delivery_method: enums.BudgetDeliveryMethod.STANDARD,
+          explicitly_shared: false,
+        },
+      },
+      // 2. Campaign
+      {
+        entity: 'campaign',
+        operation: 'create',
+        resource: {
+          resource_name: campaignTemp,
+          name,
+          status: enums.CampaignStatus.PAUSED,
+          advertising_channel_type: enums.AdvertisingChannelType.PERFORMANCE_MAX,
+          campaign_budget: budgetTemp,
+          ...biddingConfig,
+          // Required: EU political advertising compliance declaration
+          contains_eu_political_advertising: enums.EuPoliticalAdvertisingStatus.DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING,
+        },
+      },
+      // 3. Business Name Asset
+      {
+        entity: 'asset',
+        operation: 'create',
+        resource: {
+          resource_name: businessNameAssetTemp,
+          text_asset: { text: businessName },
+          type: enums.AssetType.TEXT,
+        },
+      },
+      // 4. Link Business Name to Campaign
+      {
+        entity: 'campaign_asset',
+        operation: 'create',
+        resource: {
+          campaign: campaignTemp,
+          asset: businessNameAssetTemp,
+          field_type: enums.AssetFieldType.BUSINESS_NAME,
+        },
+      },
+    ];
+
+    // 5-6. Logo image
+    if (logoBase64) {
+      mutations.push(
+        {
+          entity: 'asset',
+          operation: 'create',
+          resource: {
+            resource_name: logoAssetTemp,
+            name: `${name}_logo`,
+            image_asset: { data: Buffer.from(logoBase64, 'base64') },
+            type: enums.AssetType.IMAGE,
+          },
+        },
+        {
+          entity: 'campaign_asset',
+          operation: 'create',
+          resource: {
+            campaign: campaignTemp,
+            asset: logoAssetTemp,
+            field_type: enums.AssetFieldType.LOGO,
+          },
+        }
+      );
+    }
+
+    // 7-8. Marketing image (landscape 1200x628)
+    if (marketingImageBase64) {
+      mutations.push(
+        {
+          entity: 'asset',
+          operation: 'create',
+          resource: {
+            resource_name: marketingImageTemp,
+            name: `${name}_marketing_image`,
+            image_asset: { data: Buffer.from(marketingImageBase64, 'base64') },
+            type: enums.AssetType.IMAGE,
+          },
+        }
+      );
+    }
+
+    // 9-10. Square marketing image (1200x1200)
+    if (squareImageBase64) {
+      mutations.push(
+        {
+          entity: 'asset',
+          operation: 'create',
+          resource: {
+            resource_name: squareImageTemp,
+            name: `${name}_square_image`,
+            image_asset: { data: Buffer.from(squareImageBase64, 'base64') },
+            type: enums.AssetType.IMAGE,
+          },
+        }
+      );
+    }
+
+    // Create all text assets first (before asset group)
+    // Long headline
+    if (longHeadline) {
+      mutations.push({
+        entity: 'asset',
+        operation: 'create',
+        resource: {
+          resource_name: longHeadlineTemp,
+          text_asset: { text: longHeadline },
+          type: enums.AssetType.TEXT,
+        },
+      });
+    }
+
+    // Headline assets
+    let assetIdx = -6;
+    const headlineTemps = [];
+    for (const text of headlines) {
+      const assetTemp = `customers/${this.customerId}/assets/${assetIdx--}`;
+      headlineTemps.push(assetTemp);
+      mutations.push({
+        entity: 'asset',
+        operation: 'create',
+        resource: {
+          resource_name: assetTemp,
+          text_asset: { text },
+          type: enums.AssetType.TEXT,
+        },
+      });
+    }
+
+    // Description assets
+    const descriptionTemps = [];
+    for (const text of descriptions) {
+      const assetTemp = `customers/${this.customerId}/assets/${assetIdx--}`;
+      descriptionTemps.push(assetTemp);
+      mutations.push({
+        entity: 'asset',
+        operation: 'create',
+        resource: {
+          resource_name: assetTemp,
+          text_asset: { text },
+          type: enums.AssetType.TEXT,
+        },
+      });
+    }
+
+    // Now create Asset Group (after all assets exist)
+    mutations.push({
+      entity: 'asset_group',
+      operation: 'create',
+      resource: {
+        resource_name: assetGroupTemp,
+        campaign: campaignTemp,
+        name: `${name}_AssetGroup`,
+        status: enums.AssetGroupStatus.PAUSED,
+        final_urls: finalUrls,
+        final_mobile_urls: finalUrls,
+      },
+    });
+
+    // Link all assets to asset group
+    if (marketingImageBase64) {
+      mutations.push({
+        entity: 'asset_group_asset',
+        operation: 'create',
+        resource: {
+          asset_group: assetGroupTemp,
+          asset: marketingImageTemp,
+          field_type: enums.AssetFieldType.MARKETING_IMAGE,
+        },
+      });
+    }
+    if (squareImageBase64) {
+      mutations.push({
+        entity: 'asset_group_asset',
+        operation: 'create',
+        resource: {
+          asset_group: assetGroupTemp,
+          asset: squareImageTemp,
+          field_type: enums.AssetFieldType.SQUARE_MARKETING_IMAGE,
+        },
+      });
+    }
+    if (longHeadline) {
+      mutations.push({
+        entity: 'asset_group_asset',
+        operation: 'create',
+        resource: {
+          asset_group: assetGroupTemp,
+          asset: longHeadlineTemp,
+          field_type: enums.AssetFieldType.LONG_HEADLINE,
+        },
+      });
+    }
+    for (const temp of headlineTemps) {
+      mutations.push({
+        entity: 'asset_group_asset',
+        operation: 'create',
+        resource: {
+          asset_group: assetGroupTemp,
+          asset: temp,
+          field_type: enums.AssetFieldType.HEADLINE,
+        },
+      });
+    }
+    for (const temp of descriptionTemps) {
+      mutations.push({
+        entity: 'asset_group_asset',
+        operation: 'create',
+        resource: {
+          asset_group: assetGroupTemp,
+          asset: temp,
+          field_type: enums.AssetFieldType.DESCRIPTION,
+        },
+      });
+    }
+
+    const result = await this._withTimeout(
+      this.customer.mutateResources(mutations),
+      'createPmaxCampaign'
+    );
+
+    // Extract campaign ID from results
+    const campaignResult = result.mutate_operation_responses[1];
+    const campaignResourceName = campaignResult.campaign_result?.resource_name;
+    const campaignId = campaignResourceName?.split('/').pop();
+
+    logger.info('Google PMAX campaign created (PAUSED)', { id: campaignId, name, dailyBudget });
+    return { id: campaignId, name, dailyBudget, resourceName: campaignResourceName, result };
   }
 
   // ─── Ad Group & Ad Management ──────────────────────────────

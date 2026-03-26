@@ -468,6 +468,286 @@ GROUP BY platform;
 
 ---
 
+## 2026-03-26 작업 내역
+
+### Google Ads 기능 테스트 계획 (ad1278 담당)
+
+> 상무님 확인용: Meta 테스트는 youngwooknyw가 완료, Google은 ad1278가 아래 순서로 검증
+> 우선순위: 빠르게 체크 가능한 것부터
+
+---
+
+#### 1단계: KPI View 정합성 체크
+
+**이미 데이터 로딩 확인됨 → 수치 정확도만 검증하면 완료**
+
+- [x] **대시보드 vs Google Ads 대시보드 수치 비교**
+  - 방법: `http://localhost:3100` → Overview → Platform "Google" 필터
+  - Google Ads 관리자(ads.google.com)에서 동일 기간 Spend/Impressions/Clicks/Conversions 비교
+  - 기대 결과: Spend/Impressions/Clicks 오차 < 1% (micros → 원 변환 반올림 허용)
+  - 관련: `src/server.js` (GET /api/overview), `src/google/client.js`
+
+- [x] **PMAX 캠페인 수치 정합성 별도 점검**
+  - 방법: PMAX 캠페인 2개(지출 발생 중)를 Google Ads 대시보드에서 확인 후 DB와 비교
+  - DB 쿼리: `SELECT * FROM performance WHERE platform='google' AND campaign_name LIKE '%PMAX%' ORDER BY date_start DESC LIMIT 5;`
+  - 관련: `src/google/client.js` (getAdInsights — PMAX asset_group 쿼리)
+
+- [x] **conversion_value 0 문제 원인 확인**
+  - 방법: Google Ads 대시보드 → 해당 캠페인 → 전환 → 전환 가치 컬럼 확인
+  - 기대 결과: (A) API 매핑 문제 → 코드 수정 필요, 또는 (B) 실제로 전환값 미설정 → 정상 동작 확인
+  - DB 쿼리: `SELECT campaign_name, SUM(spend), SUM(conversions), SUM(conversion_value) FROM performance WHERE platform='google' AND spend > 0 GROUP BY campaign_name;`
+
+---
+
+#### 2단계: Google 소재 세팅 (광고 생성)
+
+**실제 Google Ads API로 소재 생성 가능 여부 확인 — Meta 직접 등록(`MetaDirectUploadForm`)과 대응되는 Google 버전**
+
+##### 현재 구현 상태
+
+| 기능 | 구현 여부 | 위치 |
+|---|---|---|
+| 캠페인 생성 (Search) | ✅ 코드 있음, 미테스트 | `src/google/client.js:82-109` (`createCampaign`) |
+| 광고 그룹 생성 | ✅ 코드 있음, 미테스트 | `src/google/client.js:148-161` (`createAdGroup`) |
+| 반응형 검색 광고(RSA) 생성 | ✅ 코드 있음, 미테스트 | `src/google/client.js:164-180` (`createResponsiveSearchAd`) |
+| 키워드 추가 | ✅ 코드 있음, 미테스트 | `src/google/client.js:183-194` (`addKeywords`) |
+| Creative Pipeline → Google 등록 | ✅ 코드 있음, 미테스트 | `src/content/creative-pipeline.js:211-219` (`registerToGoogle`) |
+| PMAX 캠페인+Asset Group 일괄 생성 | ✅ 구현+테스트 완료 | `src/google/client.js` (`createPmaxCampaign`) — mutateResources 사용 |
+| PMAX 캠페인 삭제 (REMOVED) | ✅ 테스트 완료 | `campaigns.update` status=REMOVED |
+| 대시보드 UI (Google 소재 셋팅 탭) | ❌ 미구현 | Meta는 `MetaDirectUploadForm` 있음, Google 버전 없음 |
+
+##### PMAX vs Standard 광고 구조 차이
+
+| 구분 | Standard (Search/Display) | PMAX |
+|---|---|---|
+| 광고 단위 | Campaign → Ad Group → Ad | Campaign → Asset Group → Asset |
+| 소재 구성 | headline + description + URL | 텍스트/이미지/동영상 에셋을 묶어서 Asset Group에 할당 |
+| 타겟팅 | 키워드/오디언스 직접 설정 | Google 머신러닝이 자동 최적화 (Signal만 제공) |
+| 게재 지면 | Search/Display/YouTube 개별 | 모든 Google 지면 자동 (Search+Display+YouTube+Gmail+Maps) |
+| API 소재 생성 | `ads.create` (RSA 등) | `assetGroups.create` + `assetGroupAssets.create` |
+| 현재 코드 | `createResponsiveSearchAd()` 구현됨 | ✅ `createPmaxCampaign()` 구현 완료 — `mutateResources` 일괄 생성 |
+
+##### 테스트 항목
+
+- [ ] **Standard 광고: RSA 생성 테스트 (creative-pipeline 경유)**
+  - 방법: `POST /api/creatives/:id/register` (platform=google) 또는 직접 `createResponsiveSearchAd()` 호출
+  - 전제: `creatives` 테이블에 Google용 소재 레코드 필요 (headline, description을 `|` 구분자로 입력)
+  - 기대 결과: Google Ads 대시보드에서 해당 Ad Group에 RSA 생성 확인
+  - 관련: `src/content/creative-pipeline.js:211-219`, `src/google/client.js:164-180`
+
+- [ ] **Standard 광고: 캠페인 + 광고그룹 + 키워드 + RSA 전체 플로우**
+  - `createCampaign()` → `createAdGroup()` → `addKeywords()` → `createResponsiveSearchAd()`
+  - 기대 결과: Google Ads 대시보드에서 전체 계층 구조 확인 (PAUSED 상태로 생성)
+
+- [x] **PMAX 캠페인+소재 일괄 생성 테스트**
+  - `createPmaxCampaign()` — `mutateResources`로 아래 리소스를 원자적(atomic) 일괄 생성:
+    - Campaign Budget (₩1) + Campaign (PAUSED) + Business Name Asset + Logo Image Asset
+    - Asset Group (PAUSED) + Marketing Image + Square Image + Long Headline + Headlines(5) + Descriptions(4)
+  - 테스트 캠페인: `TEST_PMAX_API_테스트_삭제예정` (ID: 23697395401)
+  - 결과: ✅ Google Ads 대시보드에서 캠페인 + Asset Group + 모든 에셋 정상 확인
+  - 관련: `src/google/client.js` (`createPmaxCampaign`), `scripts/test-pmax-creation.js`
+
+- [x] **PMAX 캠페인 삭제(REMOVED) 테스트**
+  - `campaigns.update` → status를 `REMOVED`로 변경
+  - 결과: ✅ 즉시 삭제 완료, Google Ads 대시보드에서 비노출 확인
+
+##### PMAX 생성 시 필수 에셋 (테스트로 확인된 최소 요구사항)
+
+| 에셋 | 최소 개수 | 비고 |
+|---|---|---|
+| Headline (30자) | 5개 | 3개로는 에러 발생 |
+| Long Headline (90자) | 1개 | 필수 |
+| Description (90자) | 4개 | 2개로는 에러 발생 |
+| Marketing Image (1200x628) | 1개 | 가로형 |
+| Square Marketing Image (1200x1200) | 1개 | 정사각형 |
+| Logo (128x128+) | 1개 | 정사각형, CampaignAsset으로 연결 |
+| Business Name | 1개 | CampaignAsset으로 연결 (Brand Guidelines 필수) |
+| Final URL | 1개 | Asset Group에 설정 |
+| EU Political Advertising 선언 | 필수 | `DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING` |
+
+##### 구현 중 발견된 기술 이슈
+
+- `google-ads-api` 라이브러리의 `create()` 메서드는 **배열**을 인자로 받음 (단일 객체 X)
+- PMAX는 개별 `create()` 호출이 아닌 **`mutateResources()`로 일괄 생성** 필요 — 캠페인/에셋/연결이 원자적으로 처리
+- `mutateResources` 형식: `{ entity: 'campaign', operation: 'create', resource: {...} }`
+- 임시 리소스명(`customers/{id}/campaigns/-2`)으로 아직 생성 안 된 리소스를 참조 가능
+- 입찰 전략은 `bidding_strategy_type` enum이 아닌 실제 전략 객체(`maximize_conversions: {}`) 사용 필요
+
+---
+
+#### 3단계: Campaign Alerts — Slack/Telegram 알림 확인
+
+**KPI 임계값 초과/미달 시 Slack/Telegram으로 자동 알림 전송되는 기능 검증**
+
+##### 알림 아키텍처 (Bot Token 방식으로 전환 완료)
+
+```
+collector.js (_analyzeAndAlert)
+  → DB alerts 테이블 INSERT
+  → notifier.broadcast()
+    → Slack Bot Token: chat.postMessage (기본 — 삭제 가능)
+    → Slack Webhook (fallback — Bot Token 미설정 시)
+    → Telegram Bot API (선택)
+```
+
+##### Slack Bot 멘션 답변 (Socket Mode)
+
+```
+Slack @멘션 → slack-bot.js (Socket Mode)
+  → AdManagerSkill.handleMessage()
+    → DB 쿼리 → 응답 생성 → 스레드 답변
+```
+
+- `@봇이름 성과 보여줘` → 최근 성과 리포트 답변
+- `@봇이름 캠페인 목록` → 활성 캠페인 리스트 답변
+- 멘션 없이는 응답하지 않음
+
+##### 환경변수
+
+| 변수 | 용도 |
+|---|---|
+| `SLACK_BOT_TOKEN` | xoxb-... Bot Token (알림 전송 + 멘션 답변) |
+| `SLACK_APP_TOKEN` | xapp-... App Token (Socket Mode 연결) |
+| `SLACK_ALERT_CHANNEL` | 알림 전송 채널 ID |
+| `SLACK_ALERTS_PAUSED` | `true`로 설정 시 알림 일시정지 |
+| `ALERT_ROAS_THRESHOLD` | ROAS 임계값 (기본 1.5) |
+| `ALERT_CPA_THRESHOLD` | CPA 임계값 (기본 50000) |
+| `ALERT_BUDGET_BURN_RATE` | 예산 소진율 임계값 (기본 0.85) |
+
+##### 테스트 결과
+
+- [x] **Slack Bot Token 방식 전환**
+  - Webhook → Bot Token(`chat.postMessage`)으로 전환 완료
+  - Bot Token으로 보낸 메시지는 삭제 가능 (Webhook 메시지는 삭제 불가)
+  - 관련: `src/utils/notifier.js` (Webhook fallback 유지)
+
+- [x] **Slack 알림 전송 + 삭제 테스트**
+  - ROAS < 1.5 캠페인 알림 전송 → Slack 채널 수신 확인
+  - Bot Token으로 보낸 메시지 일괄 삭제 성공
+  - 현재 상태: `SLACK_ALERTS_PAUSED=true` (일시정지 중)
+
+- [x] **Slack Bot 멘션 답변 구현**
+  - `@slack/bolt` Socket Mode로 구현 → `src/slack-bot.js`
+  - 서버 시작 시 자동 연결 (`src/server.js`에서 `startSlackBot()` 호출)
+  - `@봇이름 성과 보여줘` 등 멘션 시 AdManagerSkill 라우팅 → 스레드 답변
+
+- [x] **대시보드 Chat UI 개선**
+  - 빠른 명령어 버튼 6개 추가 (성과 보여줘/캠페인 목록/예산 늘려줘/최적화 추천/캠페인 일시정지/알림 확인)
+  - placeholder 한국어 변경
+  - chat 응답 서식 개선 (pre-wrap)
+  - `generateReport()` 개선: spend > 0 캠페인만 표시, 소수점 정리, 플랫폼간 ROAS 비교 인사이트 추가
+
+---
+
+#### 4단계: Contents/Creatives View — Google 소재
+
+**Google 소재 데이터 표시 여부 확인 + PMAX 구조 특수성 분석**
+
+##### PMAX Creatives View 설계 이슈
+
+PMAX는 Meta/NaverGFA와 근본적으로 구조가 다름:
+
+| 구분 | Meta / NaverGFA | Google PMAX |
+|---|---|---|
+| 소재 단위 | 1 Ad = 1 Creative (이미지+텍스트+CTA) | 1 Asset Group = N Assets (이미지/동영상/텍스트 조합) |
+| 성과 귀속 | Ad별 성과 직접 조회 가능 | Asset Group 단위 성과만 제공 (개별 Asset 성과 제한적) |
+| 이미지 조회 | AdCreative → AdImage → CDN URL | `asset_group_asset` → `asset.image_asset.full_size.url` |
+| 갤러리 표시 | 1 카드 = 1 광고 소재 | **1 카드 = 1 Asset Group?** 또는 **1 카드 = 1 Asset?** 결정 필요 |
+
+현재 코드에서는 PMAX asset_group을 `ag_` prefix 붙여서 ad_performance 테이블에 저장 중 (`src/google/client.js:359`).
+→ Creatives 갤러리에서 `ag_`로 시작하는 항목이 PMAX 소재.
+
+##### 테스트 항목
+
+- [ ] **Creatives 갤러리에서 Google 소재 표시 확인**
+  - 방법: 대시보드 → Creatives → Platform "Google" 필터
+  - 기대 결과: Google 소재 카드 표시 (이미지는 placeholder)
+  - 확인 포인트:
+    - PMAX asset_group(`ag_` prefix)과 standard ad 모두 표시되는지
+    - PMAX 소재 카드에 asset_group 이름이 표시되는지
+    - standard ad 7,478건 중 지출 0인 항목들이 필터링/정렬되는지
+
+- [ ] **Google 소재 성과 수치 정합성**
+  - Creatives 갤러리 → Google → PMAX 소재의 Spend/Impressions/ROAS를 Google Ads와 비교
+  - DB 쿼리: `SELECT ad_id, ad_name, SUM(spend), SUM(impressions), SUM(clicks) FROM ad_performance WHERE platform='google' AND spend > 0 GROUP BY ad_id ORDER BY SUM(spend) DESC LIMIT 10;`
+
+- [ ] **PMAX 소재 구조 분석 및 Creatives View 개선 방향 결정**
+  - 조사: Google Ads API에서 asset_group 내 개별 asset 목록 + 이미지 URL 가져오기 가능한지
+  - API: `asset_group_asset` 리소스 → `asset.image_asset.full_size.url` (이미지), `asset.text_asset.text` (텍스트)
+  - 결정 필요:
+    - (A) Asset Group 단위로 카드 표시 (현재 방식) — 대표 이미지 1장 + 성과 요약
+    - (B) 개별 Asset별 카드 표시 — 이미지/텍스트 각각 성과 확인 (API 지원 제한적)
+  - 참고: `asset_group_asset_performance_view` 리소스로 개별 에셋 성과 조회 가능하나 제한적
+
+- [ ] **Google 소재 이미지 URL 수집 파이프라인 설계**
+  - 현황: Meta는 AdCreative → AdImage → CDN URL 파이프라인 완료, Google은 미구현
+  - 구현 방안:
+    - PMAX: `asset_group_asset` 쿼리 → `asset.image_asset.full_size.url`
+    - Display: `ad_group_ad.ad.image_ad.image_url`
+    - Search(RSA): 이미지 없음 (텍스트 광고) — placeholder 유지
+  - 향후 작업으로 등록
+
+---
+
+#### 보류: 캠페인 On/Off 토글
+
+> 실제 운영 중인 캠페인을 끄고 켜는 리스크가 있어 우선 배제. 코드 자체는 구현 완료 상태.
+> - 관련 코드: `src/google/client.js:136-143` (`setCampaignStatus`), `src/utils/platform-adapter.js`
+> - 나중에 테스트용 캠페인을 별도 생성한 후 테스트 진행 가능
+
+---
+
+#### 테스트 결과 요약
+
+| 테스트 항목 | 상태 | 비고 |
+|---|---|---|
+| **1단계: KPI View** | | |
+| 대시보드 vs Google Ads 수치 비교 | ✅ | 비용/클릭 완벽 일치, 전환 0.7% 차이 (귀속 지연) |
+| PMAX 수치 정합성 | ✅ | new/rt 캠페인 모두 검증 완료 |
+| conversion_value 0 원인 | ✅ | cron 중단 + 전환 귀속 지연이 원인, API 매핑 정상 |
+| **2단계: 소재 세팅** | | |
+| PMAX 캠페인+소재 일괄 생성 | ✅ | mutateResources 원자적 생성 성공 |
+| PMAX 캠페인 삭제 (REMOVED) | ✅ | 즉시 삭제 확인 |
+| RSA 생성 테스트 | ⬜ | Standard 광고용, 추후 진행 |
+| 캠페인+광고그룹+키워드+RSA 전체 플로우 | ⬜ | Standard 광고용, 추후 진행 |
+| **3단계: Alerts + Slack Bot** | | |
+| Slack Bot Token 전환 | ✅ | Webhook → Bot Token, 삭제 가능 |
+| Slack 알림 전송 + 삭제 | ✅ | 전송/삭제 모두 확인, 현재 일시정지 중 |
+| Slack Bot 멘션 답변 | ✅ | Socket Mode, @멘션 → 스레드 답변 |
+| 대시보드 Chat UI 개선 | ✅ | 빠른 명령어 버튼 + 성과 리포트 개선 |
+| **4단계: Creatives View** | | |
+| Creatives 갤러리 Google 표시 | ⬜ | |
+| Creatives 성과 수치 정합성 | ⬜ | |
+| PMAX 구조 분석 + View 개선 방향 | ⬜ | |
+| Google 이미지 URL 파이프라인 설계 | ⬜ | |
+
+### 발견 이슈
+
+#### [해결] KPI 정합성 불일치 — cron 중단 + 전환 귀속 지연
+
+- **현상**: DB 수치가 Google Ads 대시보드 대비 비용 12%, 전환 71% 부족
+- **원인 1**: 15분 cron 수집이 3/25 00:15 이후 중단됨 → 3/25~3/26 데이터가 자정 직후 1회 수집분만 저장
+- **원인 2**: Google Ads 전환은 클릭 후 최대 30일까지 소급 귀속 → 수집 당시에는 미귀속 전환이 많았음
+- **해결**: `node scripts/collect-historical.js 2026-03-01 2026-03-26 google` 백필 실행
+- **결과**: 3/20~3/25 기준 비용/클릭 **완벽 일치**, 전환 **0.7% 차이** (백필 시점과 대시보드 조회 시점 사이 전환 1건 추가 귀속)
+- **향후 대응**: 과거 N일 데이터를 주기적으로 재수집하는 로직 추가 필요 (전환 귀속 지연 방지)
+
+##### 정합성 검증 결과 (3/20~3/25)
+
+| 캠페인 | 항목 | Google Ads | DB | 차이 |
+|---|---|---|---|---|
+| PMAX_AL_new | 비용 | ₩2,442,732 | ₩2,442,732 | 일치 |
+| PMAX_AL_new | 클릭 | 11,778 | 11,778 | 일치 |
+| PMAX_AL_new | 전환 | 47.29 | 47.29 | 일치 |
+| PMAX_AL_new | 전환가치 | ₩6,096,890 | ₩6,096,890 | 일치 |
+| PMAX_AL_rt | 비용 | ₩1,835,657 | ₩1,835,657 | 일치 |
+| PMAX_AL_rt | 클릭 | 7,170 | 7,170 | 일치 |
+| PMAX_AL_rt | 전환 | 115.02 | 114.02 | -1.0 (귀속 지연) |
+| PMAX_AL_rt | 전환가치 | ₩14,458,785 | ₩14,316,785 | -₩142K (0.7%) |
+| **총계** | **비용** | **₩4,278,389** | **₩4,278,389** | **일치** |
+
+---
+
 ## 다음 작업 예정
 
 - [x] 과거 데이터 백필 — Google 3월분 완료 (3,480건), 스크립트 Meta+Google 통합

@@ -18,6 +18,7 @@ import { getOptimizer, getPipeline, getTemplateEngine, getABTestEngine, getAudie
 import { getMetaClient } from './utils/clients.js';
 import crypto from 'crypto';
 import { getAdapter } from './utils/platform-adapter.js';
+import { startSlackBot } from './slack-bot.js';
 import multer from 'multer';
 import fs from 'fs';
 
@@ -935,10 +936,17 @@ collector.on('collected', () => {
   broadcastToClients('performance_update', optimizer.getSummary(1));
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   logger.info(`API server running on http://localhost:${PORT}`);
   logger.info(`WebSocket available at ws://localhost:${PORT}/ws`);
   if (!API_TOKEN) logger.warn('API_AUTH_TOKEN not set — running without authentication (dev mode)');
+
+  // Start Slack Bot (Socket Mode) for @mention responses
+  try {
+    await startSlackBot();
+  } catch (err) {
+    logger.warn('Slack Bot failed to start', { error: err.message });
+  }
 });
 
 // ─── LOW #19: Graceful Shutdown ──────────────────────────────────

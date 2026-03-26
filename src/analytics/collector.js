@@ -58,8 +58,12 @@ export class DataCollector extends EventEmitter {
       }
     });
 
-    // Run analysis after collection
-    await this._analyzeAndAlert();
+    // Run analysis after collection (disabled: SLACK_ALERTS_PAUSED=true)
+    if (process.env.SLACK_ALERTS_PAUSED !== 'true') {
+      await this._analyzeAndAlert();
+    } else {
+      logger.info('Alerts paused (SLACK_ALERTS_PAUSED=true)');
+    }
 
     logger.info('Data collection cycle complete');
     this.emit('collected');

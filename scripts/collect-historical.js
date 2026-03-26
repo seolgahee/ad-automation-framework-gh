@@ -30,8 +30,9 @@ initDatabase();
 
 const upsertCampaign = (p) => db.prepare(`
   INSERT INTO campaigns (id, platform, platform_id, name, status, updated_at)
-  VALUES (?, '${p}', ?, ?, 'ACTIVE', datetime('now'))
-  ON CONFLICT(platform, platform_id) DO UPDATE SET updated_at=datetime('now')
+  VALUES (?, '${p}', ?, ?, ?, datetime('now'))
+  ON CONFLICT(platform, platform_id) DO UPDATE SET
+    name=excluded.name, status=excluded.status, updated_at=datetime('now')
 `);
 
 const upsertPerf = (p) => db.prepare(`
@@ -39,6 +40,19 @@ const upsertPerf = (p) => db.prepare(`
     conversions, conversion_value, ctr, cpc, cpm, roas, cpa)
   VALUES (?, '${p}', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(campaign_id, platform, date_start) DO UPDATE SET
+    impressions=excluded.impressions, clicks=excluded.clicks, spend=excluded.spend,
+    conversions=excluded.conversions, conversion_value=excluded.conversion_value,
+    ctr=excluded.ctr, cpc=excluded.cpc, cpm=excluded.cpm, roas=excluded.roas, cpa=excluded.cpa,
+    collected_at=datetime('now')
+`);
+
+const upsertAdPerf = db.prepare(`
+  INSERT INTO ad_performance
+    (ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name,
+     platform, date_start, impressions, clicks, spend, conversions,
+     conversion_value, ctr, cpc, cpm, roas, cpa)
+  VALUES (?, ?, ?, ?, ?, ?, 'meta', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(ad_id, platform, date_start) DO UPDATE SET
     impressions=excluded.impressions, clicks=excluded.clicks, spend=excluded.spend,
     conversions=excluded.conversions, conversion_value=excluded.conversion_value,
     ctr=excluded.ctr, cpc=excluded.cpc, cpm=excluded.cpm, roas=excluded.roas, cpa=excluded.cpa,
@@ -70,6 +84,19 @@ async function collectMeta() {
   }
 
   console.log(`\n=== Meta Historical Data (${since} ~ ${until}) ===`);
+
+  // 캠페인 실제 status 사전 조회 (ACTIVE + PAUSED 모두)
+  const campaignStatusMap = new Map();
+  try {
+    const liveCampaigns = await meta.getCampaigns(['ACTIVE', 'PAUSED', 'ARCHIVED', 'DELETED']);
+    for (const c of liveCampaigns) {
+      campaignStatusMap.set(String(c.id), c.effective_status || c.status || 'ACTIVE');
+    }
+    console.log(`[Meta] ${campaignStatusMap.size}개 캠페인 status 조회 완료`);
+  } catch (err) {
+    console.log(`[Meta] 캠페인 status 조회 실패 (${err.message}) — 기본값 ACTIVE 사용`);
+  }
+
   let totalRows = 0;
 
   for (const date of dates) {
@@ -83,7 +110,8 @@ async function collectMeta() {
       const tx = db.transaction(() => {
         for (const row of insights) {
           const uid = `meta_${row.campaignId}`;
-          metaCampaignStmt.run(uid, row.campaignId, row.campaignName || uid);
+          const status = campaignStatusMap.get(String(row.campaignId)) || 'ACTIVE';
+          metaCampaignStmt.run(uid, row.campaignId, row.campaignName || uid, status);
           const roas = row.spend > 0 ? row.conversionValue / row.spend : 0;
           const cpa  = row.conversions > 0 ? row.spend / row.conversions : 0;
           metaPerfStmt.run(
@@ -106,6 +134,45 @@ async function collectMeta() {
   return totalRows;
 }
 
+// ─── Meta 소재 레벨 백필 ─────────────────────────────────────
+
+async function collectMetaAdLevel() {
+  const meta = getMetaClient();
+  if (!meta._configured) return 0;
+
+  console.log(`\n=== Meta Ad-Level Historical Data (${since} ~ ${until}) ===`);
+  let totalRows = 0;
+
+  for (const date of dates) {
+    process.stdout.write(`[Meta Ad] ${date}... `);
+    try {
+      const insights = await meta.getAdInsights({
+        timeRange: { since: date, until: date },
+      });
+
+      const tx = db.transaction(() => {
+        for (const row of insights) {
+          upsertAdPerf.run(
+            row.adId, row.adName, row.adsetId, row.adsetName,
+            `meta_${row.campaignId}`, row.campaignName, date,
+            row.impressions, row.clicks, row.spend,
+            row.conversions, row.conversionValue,
+            row.ctr, row.cpc, row.cpm, row.roas, row.cpa
+          );
+        }
+      });
+      tx();
+      totalRows += insights.length;
+      console.log(`${insights.length} rows`);
+    } catch (err) {
+      console.log(`failed (${err.message})`);
+    }
+  }
+
+  console.log(`[Meta Ad] Total ${totalRows} rows saved`);
+  return totalRows;
+}
+
 // ─── Google 백필 ────────────────────────────────────────────
 
 async function collectGoogle() {
@@ -116,6 +183,19 @@ async function collectGoogle() {
   }
 
   console.log(`\n=== Google Historical Data (${since} ~ ${until}) ===`);
+
+  // 캠페인 실제 status 사전 조회
+  const googleStatusMap = new Map();
+  try {
+    const liveCampaigns = await google.getCampaigns(['ENABLED', 'PAUSED']);
+    for (const c of liveCampaigns) {
+      googleStatusMap.set(String(c.id), c.status || 'ACTIVE');
+    }
+    console.log(`[Google] ${googleStatusMap.size}개 캠페인 status 조회 완료`);
+  } catch (err) {
+    console.log(`[Google] 캠페인 status 조회 실패 (${err.message}) — 기본값 ACTIVE 사용`);
+  }
+
   let totalRows = 0;
 
   for (const date of dates) {
@@ -130,7 +210,8 @@ async function collectGoogle() {
       const tx = db.transaction(() => {
         for (const row of rows) {
           const uid = `google_${row.campaignId}`;
-          googleCampaignStmt.run(uid, row.campaignId, row.campaignName || uid);
+          const status = googleStatusMap.get(String(row.campaignId)) || 'ACTIVE';
+          googleCampaignStmt.run(uid, row.campaignId, row.campaignName || uid, status);
           const roas = row.spend > 0 ? row.conversionValue / row.spend : 0;
           const cpa  = row.conversions > 0 ? row.spend / row.conversions : 0;
           googlePerfStmt.run(
@@ -156,14 +237,16 @@ async function collectGoogle() {
 // ─── 실행 ───────────────────────────────────────────────────
 
 let metaTotal = 0;
+let metaAdTotal = 0;
 let googleTotal = 0;
 
 if (!platform || platform === 'meta') {
   metaTotal = await collectMeta();
+  metaAdTotal = await collectMetaAdLevel();
 }
 if (!platform || platform === 'google') {
   googleTotal = await collectGoogle();
 }
 
-console.log(`\n✅ Complete. Meta: ${metaTotal} rows, Google: ${googleTotal} rows (${since} ~ ${until})`);
+console.log(`\n✅ Complete. Meta: ${metaTotal} campaign rows, Meta Ad-level: ${metaAdTotal} rows, Google: ${googleTotal} rows (${since} ~ ${until})`);
 process.exit(0);

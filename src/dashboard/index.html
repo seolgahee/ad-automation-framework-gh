@@ -126,6 +126,7 @@
       users: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
       upload: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>,
       image: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>,
+      zap: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>,
     };
 
     // ─── Model Badge (Perplexity style) ──────────────────────
@@ -208,8 +209,8 @@
             <p className="text-xs text-ppl-sub">ROAS {(c.week_roas || 0).toFixed(2)} · CPA ₩{krwFmt.format(Math.round(c.today_spend && c.today_conversions ? c.today_spend / c.today_conversions : 0))}</p>
           </div>
           <div className="text-right shrink-0">
-            <p className="text-sm font-medium">₩{krwFmt.format(c.today_spend || 0)}</p>
-            <p className="text-xs text-ppl-sub">/ ₩{krwFmt.format(c.daily_budget || 0)}</p>
+            <p className="text-sm font-medium">₩{krwFmt.format(Math.round(c.today_spend || 0))}</p>
+            <p className="text-xs text-ppl-sub">/ ₩{krwFmt.format(Math.round(c.daily_budget || 0))}</p>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             <span className={`w-1.5 h-1.5 rounded-full ${c.status === 'ACTIVE' ? 'bg-emerald-500' : 'bg-amber-400'}`}></span>
@@ -674,83 +675,16 @@
 
       // ─── Meta Creative Settings Panel (defined outside App to prevent remount) ───
       const MetaCreativeSettingsPanel = ({ campaigns }) => {
-        const [metaTab, setMetaTab] = React.useState('upload');
-        const [metaTemplates, setMetaTemplates] = React.useState([]);
-        const [loadingTemplates, setLoadingTemplates] = React.useState(false);
-
-        React.useEffect(() => {
-          if (metaTab !== 'templates') return;
-          setLoadingTemplates(true);
-          apiFetch(`${API}/templates?platform=meta`).then(r => r.json()).catch(() => [])
-            .then(t => { setMetaTemplates(Array.isArray(t) ? t : []); setLoadingTemplates(false); });
-        }, [metaTab]);
-
-        const tabs = [
-          { id: 'upload', label: '소재 등록' },
-          { id: 'templates', label: '템플릿' },
-        ];
-
         return (
           <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <h2 className="text-2xl font-bold text-ppl-text">Meta 광고 소재 셋팅</h2>
-                  <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-600">Meta 전용</span>
-                </div>
-                <p className="text-sm text-ppl-sub">새 소재 등록 · 템플릿 관리</p>
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <h2 className="text-2xl font-bold text-ppl-text">Creative Upload</h2>
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-600">Meta 전용</span>
               </div>
+              <p className="text-sm text-ppl-sub">새 소재 등록</p>
             </div>
-            <div className="flex gap-1 bg-white border border-ppl-border rounded-xl p-1 w-fit">
-              {tabs.map(t => (
-                <button key={t.id} onClick={() => setMetaTab(t.id)}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    metaTab === t.id ? 'bg-blue-500 text-white' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'
-                  }`}>{t.label}</button>
-              ))}
-            </div>
-            {metaTab === 'upload' && (
-              <MetaDirectUploadForm setMetaTab={setMetaTab} campaigns={campaigns} />
-            )}
-            {metaTab === 'templates' && (
-              <div className="space-y-3">
-                {loadingTemplates ? (
-                  <div className="flex items-center justify-center py-12 text-ppl-sub text-sm">불러오는 중...</div>
-                ) : metaTemplates.length === 0 ? (
-                  <div className="bg-white rounded-2xl border border-ppl-border p-10 text-center text-ppl-sub">
-                    <p className="text-sm">Meta 템플릿이 없습니다.</p>
-                    <p className="text-xs mt-1">Content Studio → Templates에서 Meta 템플릿을 생성하세요.</p>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 gap-4">
-                    {metaTemplates.map(t => (
-                      <div key={t.id} className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm hover:border-blue-300 transition-colors">
-                        <div className="flex items-center gap-2 mb-3">
-                          <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-md font-medium">Meta</span>
-                          {t.is_builtin ? <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-md">기본</span> : <span className="text-xs bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-md">커스텀</span>}
-                        </div>
-                        <p className="text-sm font-semibold mb-1">{t.name}</p>
-                        {t.headline && <p className="text-xs text-ppl-sub truncate mb-2">헤드라인: {t.headline}</p>}
-                        {t.description && <p className="text-xs text-ppl-sub truncate">설명: {t.description}</p>}
-                        {t.variables_json && (() => {
-                          try {
-                            const vars = JSON.parse(t.variables_json);
-                            return vars.length > 0 ? (
-                              <div className="mt-3 flex flex-wrap gap-1">
-                                {vars.map(v => <span key={v} className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded font-mono">{`{{${v}}}`}</span>)}
-                              </div>
-                            ) : null;
-                          } catch { return null; }
-                        })()}
-                        <button onClick={() => setMetaTab('upload')}
-                          className="mt-4 w-full py-1.5 rounded-lg bg-blue-50 text-blue-600 text-xs font-medium hover:bg-blue-100 transition-colors"
-                        >이 템플릿으로 소재 등록</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+            <MetaDirectUploadForm setMetaTab={() => {}} campaigns={campaigns} />
           </div>
         );
       };
@@ -829,10 +763,10 @@
             apiFetch(`${API}/ab-tests`).then(r => r.json()).catch(() => []),
             apiFetch(`${API}/audiences`).then(r => r.json()).catch(() => []),
           ]);
-          setCreatives(cr);
-          setTemplates(tpl);
-          setAbTests(ab);
-          setAudiences(aud);
+          setCreatives(Array.isArray(cr) ? cr : []);
+          setTemplates(Array.isArray(tpl) ? tpl : []);
+          setAbTests(Array.isArray(ab) ? ab : []);
+          setAudiences(Array.isArray(aud) ? aud : []);
         } catch (err) { console.error('Content fetch failed:', err); }
       }, []);
 
@@ -874,8 +808,8 @@
             apiFetch(`${API}/alerts?limit=10`).then(r => r.json()),
           ]);
           setOverview(ov);
-          setCampaigns(camp);
-          setTimeline(tl);
+          setCampaigns(Array.isArray(camp) ? camp : []);
+          setTimeline(Array.isArray(tl) ? tl : []);
           setAlerts(al);
         } catch (err) {
           console.error('Fetch failed:', err);
@@ -1008,7 +942,9 @@
             <p className="text-xs font-medium text-ppl-sub uppercase tracking-wider px-2 mb-2">Menu</p>
             {[
               { icon: Icons.home, label: 'Overview', view: 'overview' },
+              { icon: Icons.zap, label: 'Automation', view: 'automation' },
               { icon: Icons.chart, label: 'Dashboard', view: 'dashboard' },
+              { icon: Icons.upload, label: 'Creative Upload', view: 'meta-creative' },
             ].map((item, i) => (
               <button key={i} onClick={() => setActiveView(item.view)}
                 className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${activeView === item.view ? 'bg-ppl-teal text-white' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
@@ -1030,13 +966,10 @@
               { icon: Icons.code, label: 'Templates', action: () => { setActiveView('dashboard'); setContentTab('templates'); } },
               { icon: Icons.beaker, label: 'A/B Tests', action: () => { setActiveView('dashboard'); setContentTab('ab-tests'); } },
               { icon: Icons.users, label: 'Audiences', action: () => { setActiveView('dashboard'); setContentTab('audiences'); } },
-              { icon: Icons.upload, label: 'Creative Upload', action: () => { setActiveView('dashboard'); setContentTab('upload'); } },
-              { icon: Icons.image, label: 'Meta 소재 셋팅', action: () => setActiveView('meta-creative') },
             ].map((item, i) => (
               <button key={i} onClick={item.action}
                 className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${
-                  (item.label === 'Creatives' && activeView === 'creatives') ||
-                  (item.label === 'Meta 소재 셋팅' && activeView === 'meta-creative')
+                  (item.label === 'Creatives' && activeView === 'creatives')
                     ? 'bg-ppl-teal text-white' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'
                 }`}>
                 {item.icon}
@@ -1505,6 +1438,12 @@
           return getTier(row) === adPerfFilter;
         });
 
+        // image_url 중복 카운트 (null/빈 값 제외)
+        const imageUrlCount = {};
+        filteredAds.forEach(row => {
+          if (row.image_url) imageUrlCount[row.image_url] = (imageUrlCount[row.image_url] || 0) + 1;
+        });
+
         const fmtNum = (n) => {
           if (n >= 1000000) return (n / 1000000).toFixed(2) + 'M';
           if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
@@ -1705,9 +1644,14 @@
                       )}
 
                       {/* Badges */}
-                      <div className="px-3 pt-2.5 flex items-center gap-1.5">
+                      <div className="px-3 pt-2.5 flex items-center gap-1.5 flex-wrap">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${ps.bg} ${ps.text}`}>{ps.label}</span>
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${tierStyle[tier]}`}>{tierLabel[tier]}</span>
+                        {row.image_url && imageUrlCount[row.image_url] > 1 && (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700" title="같은 이미지를 공유하는 다른 소재가 있습니다 (EBIZ 카탈로그 광고)">
+                            이미지공유 {imageUrlCount[row.image_url]}개
+                          </span>
+                        )}
                       </div>
 
                       {/* Ad info */}
@@ -1755,6 +1699,131 @@
       };
 
       // ─── Overview Panel ──────────────────────────────
+      // ─── Automation Panel ─────────────────────────────────────
+      const AutomationPanel = () => {
+        const [slackEnabled, setSlackEnabled] = React.useState(false);
+        const [thresholds, setThresholds] = React.useState({ roasMin: 1.5, cpaMax: 50000, budgetBurnRate: 0.85 });
+        const [thresholdDraft, setThresholdDraft] = React.useState(null);
+        const [saved, setSaved] = React.useState(false);
+
+        React.useEffect(() => {
+          apiFetch(`${API}/settings/slack-status`).then(d => setSlackEnabled(d?.enabled || false)).catch(() => {});
+          apiFetch(`${API}/settings/alert-thresholds`).then(d => { setThresholds(d); setThresholdDraft(d); }).catch(() => {});
+        }, []);
+
+        const toggleSlack = async () => {
+          try {
+            const next = !slackEnabled;
+            await apiFetch(`${API}/settings/slack-toggle`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: next }) });
+            setSlackEnabled(next);
+          } catch {}
+        };
+
+        const saveThresholds = async () => {
+          try {
+            await apiFetch(`${API}/settings/alert-thresholds`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(thresholdDraft) });
+            setThresholds(thresholdDraft);
+            setSaved(true);
+            setTimeout(() => setSaved(false), 2000);
+          } catch {}
+        };
+
+        const draft = thresholdDraft || thresholds;
+        const activeCampaigns = campaigns.filter(c => c.status === 'ACTIVE' && (selectedPlatform === 'all' || c.platform === selectedPlatform) && (c.today_spend || 0) > 0);
+
+        return (
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-2xl font-bold text-ppl-text">Automation</h2>
+              <p className="text-sm text-ppl-sub mt-1">알림 설정 및 캠페인 제어</p>
+            </div>
+
+            {/* 슬랙 알림 + 설정값 */}
+            <div className="grid grid-cols-2 gap-4">
+              {/* 왼쪽: 알림 토글 + 최근 알림 */}
+              <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
+                <div className="flex items-center gap-2 mb-4">
+                  {Icons.bell}
+                  <h3 className="text-base font-semibold">Slack 알림</h3>
+                </div>
+                <div className="flex items-center justify-between py-3 border-b border-ppl-border">
+                  <div>
+                    <p className="text-sm font-medium">자동 알림</p>
+                    <p className="text-xs text-ppl-sub mt-0.5">ROAS 미달 · CPA 초과 · 예산 조기소진 감지 시 발송</p>
+                  </div>
+                  <button onClick={toggleSlack} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${slackEnabled ? 'bg-ppl-teal' : 'bg-gray-200'}`}>
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${slackEnabled ? 'translate-x-6' : 'translate-x-1'}`}/>
+                  </button>
+                </div>
+                {alerts.length > 0 ? (
+                  <div className="mt-4 space-y-2">
+                    <p className="text-xs text-ppl-sub font-medium uppercase tracking-wider">최근 알림 ({alerts.length})</p>
+                    {alerts.slice(0, 5).map(a => <AlertItem key={a.id} alert={a} />)}
+                  </div>
+                ) : (
+                  <p className="text-sm text-ppl-sub mt-4">최근 알림 없음</p>
+                )}
+              </div>
+
+              {/* 오른쪽: 알림 임계값 설정 */}
+              <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
+                <div className="flex items-center gap-2 mb-4">
+                  {Icons.gear}
+                  <h3 className="text-base font-semibold">알림 기준값</h3>
+                </div>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-sub mb-1">ROAS 미달 기준 <span className="text-ppl-text">(이하 시 알림)</span></label>
+                    <div className="flex items-center gap-2">
+                      <input type="number" step="0.1" min="0" value={draft.roasMin}
+                        onChange={e => setThresholdDraft({ ...draft, roasMin: parseFloat(e.target.value) })}
+                        className="w-full border border-ppl-border rounded-lg px-3 py-2 text-sm" />
+                      <span className="text-xs text-ppl-sub shrink-0">배수</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-sub mb-1">CPA 초과 기준 <span className="text-ppl-text">(이상 시 알림)</span></label>
+                    <div className="flex items-center gap-2">
+                      <input type="number" step="1000" min="0" value={draft.cpaMax}
+                        onChange={e => setThresholdDraft({ ...draft, cpaMax: parseFloat(e.target.value) })}
+                        className="w-full border border-ppl-border rounded-lg px-3 py-2 text-sm" />
+                      <span className="text-xs text-ppl-sub shrink-0">원</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-ppl-sub mb-1">예산 소진률 기준 <span className="text-ppl-text">(이상 시 알림)</span></label>
+                    <div className="flex items-center gap-2">
+                      <input type="number" step="0.05" min="0" max="1" value={draft.budgetBurnRate}
+                        onChange={e => setThresholdDraft({ ...draft, budgetBurnRate: parseFloat(e.target.value) })}
+                        className="w-full border border-ppl-border rounded-lg px-3 py-2 text-sm" />
+                      <span className="text-xs text-ppl-sub shrink-0">(0~1)</span>
+                    </div>
+                  </div>
+                  <button onClick={saveThresholds}
+                    className={`w-full py-2 rounded-lg text-sm font-medium transition-colors ${saved ? 'bg-emerald-500 text-white' : 'bg-ppl-teal text-white hover:opacity-90'}`}>
+                    {saved ? '저장됨 ✓' : '저장'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 캠페인 제어 */}
+            <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
+              <div className="flex items-center gap-2 mb-4">
+                {Icons.zap}
+                <h3 className="text-base font-semibold">캠페인 제어</h3>
+                <span className="ml-auto text-xs bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-full font-medium">{activeCampaigns.length} Active</span>
+              </div>
+              {activeCampaigns.length === 0 ? (
+                <p className="text-sm text-ppl-sub">라이브 중인 캠페인 없음</p>
+              ) : (
+                activeCampaigns.map(c => <CampaignRow key={c.id} campaign={c} onStatusChange={handleStatusChange} />)
+              )}
+            </div>
+          </div>
+        );
+      };
+
       const OverviewPanel = () => (
         <div className="space-y-6">
           <div className="flex items-center justify-between">
@@ -1872,32 +1941,8 @@
             <SubagentStep icon={Icons.chart} text="Building real-time performance dashboard" model="Collector" status="done" delay={400} />
           </div>
 
-          {/* Campaigns */}
-          <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
-            <h3 className="text-lg font-semibold mb-3">Active Campaigns</h3>
-            {campaigns.filter(c => selectedPlatform === 'all' || c.platform === selectedPlatform).length === 0 ? (
-              <p className="text-sm text-ppl-sub">No campaigns synced yet.</p>
-            ) : (
-              campaigns
-                .filter(c => selectedPlatform === 'all' || c.platform === selectedPlatform)
-                .map(c => <CampaignRow key={c.id} campaign={c} onStatusChange={handleStatusChange} />)
-            )}
-          </div>
-
           {/* Content Studio */}
           <ContentStudioPanel />
-
-          {/* Alerts */}
-          {alerts.length > 0 && (
-            <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
-              <div className="flex items-center gap-2 mb-3">
-                {Icons.bell}
-                <h3 className="text-lg font-semibold">Alerts</h3>
-                <span className="ml-auto text-xs bg-red-50 text-red-600 px-2 py-0.5 rounded-full font-medium">{alerts.length}</span>
-              </div>
-              {alerts.map(a => <AlertItem key={a.id} alert={a} />)}
-            </div>
-          )}
 
           {/* File outputs (Perplexity attachment style) */}
           <div className="flex gap-3 flex-wrap">
@@ -1974,6 +2019,10 @@
               ) : activeView === 'overview' ? (
                 <div className="px-8 py-8">
                   <OverviewPanel />
+                </div>
+              ) : activeView === 'automation' ? (
+                <div className="px-8 py-8">
+                  <AutomationPanel />
                 </div>
               ) : (
                 <div className="max-w-4xl mx-auto px-6 py-8">

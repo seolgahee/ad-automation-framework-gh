@@ -37,7 +37,7 @@ export class MetaAdsClient extends BaseAdsClient {
   async getCampaigns(statusFilter = ['ACTIVE', 'PAUSED']) {
     this._ensureConfigured();
     const fields = [
-      'id', 'name', 'status', 'objective', 'daily_budget',
+      'id', 'name', 'status', 'effective_status', 'objective', 'daily_budget',
       'lifetime_budget', 'start_time', 'stop_time', 'updated_time',
     ];
     const params = { effective_status: statusFilter };
@@ -262,7 +262,8 @@ export class MetaAdsClient extends BaseAdsClient {
     if (!adIds || adIds.length === 0) return new Map();
 
     const imageMap = new Map();
-    const hashToAdIds = new Map(); // hash → [adId, ...]
+    const adHashCandidates = new Map(); // adId → [hash, ...] (all candidates, ordered)
+    const hashRefCount = new Map();     // hash → number of ads referencing it
     const fallbackThumbnails = new Map(); // adId → thumbnail_url
 
     // Batch fetch creative data (50 ads per request)
@@ -282,24 +283,29 @@ export class MetaAdsClient extends BaseAdsClient {
           const adData = response?.[adId]?.creative;
           if (!adData) continue;
 
-          // Extract image_hash with priority order
-          let hash = null;
-          if (adData.asset_feed_spec?.images?.[0]?.hash) {
-            hash = adData.asset_feed_spec.images[0].hash;
+          const hashes = [];
+
+          if (adData.asset_feed_spec?.images?.length > 0) {
+            // DCO 광고: asset_feed_spec의 해시 선택은 부정확함 — thumbnail_url 사용
+            if (adData.thumbnail_url) {
+              fallbackThumbnails.set(adId, adData.thumbnail_url);
+            }
           } else if (adData.image_hash) {
-            hash = adData.image_hash;
+            hashes.push(adData.image_hash);
           } else if (adData.object_story_spec?.link_data?.image_hash) {
-            hash = adData.object_story_spec.link_data.image_hash;
+            hashes.push(adData.object_story_spec.link_data.image_hash);
           } else if (adData.object_story_spec?.photo_data?.image_hash) {
-            hash = adData.object_story_spec.photo_data.image_hash;
+            hashes.push(adData.object_story_spec.photo_data.image_hash);
           } else if (adData.object_story_spec?.video_data?.image_hash) {
-            hash = adData.object_story_spec.video_data.image_hash;
+            hashes.push(adData.object_story_spec.video_data.image_hash);
           }
 
-          if (hash) {
-            if (!hashToAdIds.has(hash)) hashToAdIds.set(hash, []);
-            hashToAdIds.get(hash).push(adId);
-          } else if (adData.thumbnail_url) {
+          if (hashes.length > 0) {
+            adHashCandidates.set(adId, hashes);
+            for (const h of hashes) {
+              hashRefCount.set(h, (hashRefCount.get(h) || 0) + 1);
+            }
+          } else if (adData.thumbnail_url && !fallbackThumbnails.has(adId)) {
             fallbackThumbnails.set(adId, adData.thumbnail_url);
           }
         }
@@ -308,8 +314,20 @@ export class MetaAdsClient extends BaseAdsClient {
       }
     }
 
+    // For each ad, select the most unique hash (fewest other ads sharing it).
+    // This ensures Dynamic Creative ads get their own representative image
+    // rather than a common placeholder shared across the entire ad set.
+    const selectedHashToAdIds = new Map(); // hash → [adId, ...]
+    for (const [adId, hashes] of adHashCandidates) {
+      const best = hashes.slice().sort((a, b) =>
+        (hashRefCount.get(a) || 0) - (hashRefCount.get(b) || 0)
+      )[0];
+      if (!selectedHashToAdIds.has(best)) selectedHashToAdIds.set(best, []);
+      selectedHashToAdIds.get(best).push(adId);
+    }
+
     // Bulk resolve hashes → permalink_url via AdImage API
-    const uniqueHashes = [...hashToAdIds.keys()];
+    const uniqueHashes = [...selectedHashToAdIds.keys()];
     if (uniqueHashes.length > 0) {
       try {
         const hashBatchSize = 50;
@@ -318,49 +336,34 @@ export class MetaAdsClient extends BaseAdsClient {
           const response = await this._withTimeout(
             this.api.call('GET', [this.accountId, 'adimages'], {
               hashes: JSON.stringify(hashBatch),
-              fields: 'permalink_url,hash',
+              fields: 'url,hash',
             }),
             'getAdImages'
           );
 
           const images = response?.data || [];
           for (const img of images) {
-            if (img.permalink_url && hashToAdIds.has(img.hash)) {
-              for (const adId of hashToAdIds.get(img.hash)) {
-                imageMap.set(adId, img.permalink_url);
+            if (img.url && selectedHashToAdIds.has(img.hash)) {
+              for (const adId of selectedHashToAdIds.get(img.hash)) {
+                imageMap.set(adId, img.url);
               }
             }
           }
         }
       } catch (err) {
-        logger.warn('Failed to resolve image hashes to permalink URLs', { error: err.message });
+        logger.warn('Failed to resolve image hashes to CDN URLs', { error: err.message });
       }
     }
 
-    // Resolve permalink_url redirects to direct CDN URLs (permalink_url returns 302)
-    const resolvedMap = new Map();
-    const resolvePromises = [];
-    for (const [adId, url] of imageMap) {
-      resolvePromises.push(
-        fetch(url, { method: 'HEAD', redirect: 'manual' })
-          .then(res => {
-            const cdnUrl = res.headers.get('location');
-            resolvedMap.set(adId, cdnUrl || url);
-          })
-          .catch(() => resolvedMap.set(adId, url))
-      );
-    }
-    await Promise.all(resolvePromises);
-
-    // Apply thumbnail fallbacks for ads without resolved permalink
+    // Apply thumbnail fallbacks for ads without a resolved CDN URL
     for (const [adId, thumbUrl] of fallbackThumbnails) {
-      if (!resolvedMap.has(adId)) {
-        resolvedMap.set(adId, thumbUrl);
+      if (!imageMap.has(adId)) {
+        imageMap.set(adId, thumbUrl);
       }
     }
 
-    logger.info(`Resolved ${resolvedMap.size}/${adIds.length} ad creative image URLs (CDN-direct)`);
-    return resolvedMap;
+    logger.info(`Resolved ${imageMap.size}/${adIds.length} ad creative image URLs (CDN-direct)`);
+    return imageMap;
   }
 
   // ─── Insights / Reporting ──────────────────────────────────

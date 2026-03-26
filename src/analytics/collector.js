@@ -77,10 +77,11 @@ export class DataCollector extends EventEmitter {
     const [rawCampaigns, rawPerf] = await Promise.all([fetchCampaigns(), fetchPerformance()]);
 
     const upsertCampaign = db.prepare(`
-      INSERT INTO campaigns (id, platform, platform_id, name, status, daily_budget, currency, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'KRW', datetime('now'))
+      INSERT INTO campaigns (id, platform, platform_id, name, status, daily_budget, stop_time, currency, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'KRW', datetime('now'))
       ON CONFLICT(platform, platform_id) DO UPDATE SET
-        name=excluded.name, status=excluded.status, daily_budget=excluded.daily_budget, updated_at=datetime('now')
+        name=excluded.name, status=excluded.status, daily_budget=excluded.daily_budget,
+        stop_time=excluded.stop_time, updated_at=datetime('now')
     `);
 
     const upsertPerf = db.prepare(`
@@ -97,7 +98,7 @@ export class DataCollector extends EventEmitter {
     const transaction = db.transaction(() => {
       for (const c of rawCampaigns) {
         const m = mapCampaign(c);
-        upsertCampaign.run(m.uid, platform, m.platformId, m.name, m.status, m.budget);
+        upsertCampaign.run(m.uid, platform, m.platformId, m.name, m.status, m.budget, m.stopTime || null);
       }
 
       const today = new Date().toISOString().split('T')[0];
@@ -124,8 +125,9 @@ export class DataCollector extends EventEmitter {
         uid: `meta_${c.id}`,
         platformId: c.id,
         name: c.name,
-        status: c.status,
+        status: c.effective_status || c.status,
         budget: c.daily_budget / 100,
+        stopTime: c.stop_time || null,
       })
     );
     await this._collectMetaAdLevel();

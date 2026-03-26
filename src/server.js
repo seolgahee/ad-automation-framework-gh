@@ -98,10 +98,8 @@ const rateLimitCleanupInterval = setInterval(() => {
   }
 }, 60000);
 
-// Stricter rate limit on mutation endpoints
-const mutationLimiter = rateLimit({ windowMs: 60000, max: 60 });
-const readLimiter    = rateLimit({ windowMs: 60000, max: 120 });
-app.get('/api/*', readLimiter);
+// Rate limit: GET은 제한 없음 (로컬 대시보드), POST/mutation만 제한
+const mutationLimiter = rateLimit({ windowMs: 60000, max: 120 });
 app.post('/api/*', (req, res, next) => {
   if (req.originalUrl.includes('/meta/upload-image')) return next(); // 이미지 업로드는 rate limit 제외
   mutationLimiter(req, res, next);
@@ -227,6 +225,7 @@ app.get('/api/campaigns', (req, res) => {
       (SELECT AVG(p.roas) FROM performance p WHERE p.campaign_id = c.id AND p.date_start >= date('now', '-7 days')) as week_roas
     FROM campaigns c
     WHERE c.status = 'ACTIVE'
+      AND (c.stop_time IS NULL OR c.stop_time > datetime('now'))
     ORDER BY c.platform, c.name
   `).all();
   res.json(campaigns);
@@ -929,6 +928,47 @@ app.post('/api/collect', async (req, res) => {
     logger.error('Manual collection failed', { error: err.message });
     res.status(500).json({ error: 'Collection failed', details: err.message });
   }
+});
+
+// ─── Slack 알림 토글 ─────────────────────────────────────────
+app.get('/api/settings/slack-status', (req, res) => {
+  res.json({ enabled: !!process.env.SLACK_WEBHOOK_URL });
+});
+
+app.post('/api/settings/slack-toggle', (req, res) => {
+  const { enabled } = req.body;
+  if (enabled) {
+    // .env의 주석 처리된 URL을 복원 (메모리에만 적용)
+    const saved = process.env.SLACK_WEBHOOK_URL_SAVED;
+    if (saved) process.env.SLACK_WEBHOOK_URL = saved;
+  } else {
+    process.env.SLACK_WEBHOOK_URL_SAVED = process.env.SLACK_WEBHOOK_URL || process.env.SLACK_WEBHOOK_URL_SAVED;
+    process.env.SLACK_WEBHOOK_URL = '';
+  }
+  res.json({ enabled: !!process.env.SLACK_WEBHOOK_URL });
+});
+
+// ─── Alert Thresholds ────────────────────────────────────────
+app.get('/api/settings/alert-thresholds', (req, res) => {
+  res.json({
+    roasMin: parseFloat(process.env.ALERT_ROAS_THRESHOLD || '1.5'),
+    cpaMax: parseFloat(process.env.ALERT_CPA_THRESHOLD || '50000'),
+    budgetBurnRate: parseFloat(process.env.ALERT_BUDGET_BURN_RATE || '0.85'),
+  });
+});
+
+app.post('/api/settings/alert-thresholds', mutationLimiter, (req, res) => {
+  const { roasMin, cpaMax, budgetBurnRate } = req.body;
+  if (roasMin !== undefined) process.env.ALERT_ROAS_THRESHOLD = String(roasMin);
+  if (cpaMax !== undefined) process.env.ALERT_CPA_THRESHOLD = String(cpaMax);
+  if (budgetBurnRate !== undefined) process.env.ALERT_BUDGET_BURN_RATE = String(budgetBurnRate);
+  // collector의 thresholds도 즉시 반영
+  collector.thresholds = {
+    roasMin: parseFloat(process.env.ALERT_ROAS_THRESHOLD),
+    cpaMax: parseFloat(process.env.ALERT_CPA_THRESHOLD),
+    budgetBurnRate: parseFloat(process.env.ALERT_BUDGET_BURN_RATE),
+  };
+  res.json({ success: true, thresholds: collector.thresholds });
 });
 
 // Push fresh data to dashboard clients after each collection cycle (event-driven)

@@ -96,11 +96,26 @@ function migrateAdPerformance() {
   logger.info('ad_performance migration complete');
 }
 
+/** Migrate campaigns: add stop_time column if missing */
+function migrateAddCampaignStopTime() {
+  const tableExists = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='campaigns'`
+  ).get();
+  if (!tableExists) return;
+
+  const colExists = db.prepare(`PRAGMA table_info(campaigns)`).all().some(col => col.name === 'stop_time');
+  if (colExists) return;
+
+  logger.info('Adding stop_time column to campaigns');
+  db.exec(`ALTER TABLE campaigns ADD COLUMN stop_time TEXT`);
+}
+
 /** Initialize all tables */
 export function initDatabase() {
   // Run migrations before CREATE TABLE IF NOT EXISTS (which would be a no-op on existing tables)
   migrateAdPerformance();
   migrateAddImageUrl();
+  migrateAddCampaignStopTime();
 
   db.exec(`
     -- Campaign master data (unified across platforms)
@@ -113,6 +128,7 @@ export function initDatabase() {
       objective        TEXT,
       daily_budget     REAL,
       lifetime_budget  REAL,
+      stop_time        TEXT,
       currency         TEXT DEFAULT 'KRW',
       created_at       TEXT DEFAULT (datetime('now')),
       updated_at       TEXT DEFAULT (datetime('now')),

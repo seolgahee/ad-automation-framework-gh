@@ -236,7 +236,7 @@ app.get('/api/campaigns', (req, res) => {
     SELECT c.*,
       (SELECT SUM(p.spend) FROM performance p WHERE p.campaign_id = c.id AND p.date_start >= date('now', '-1 day')) as today_spend,
       (SELECT SUM(p.conversions) FROM performance p WHERE p.campaign_id = c.id AND p.date_start >= date('now', '-1 day')) as today_conversions,
-      (SELECT AVG(p.roas) FROM performance p WHERE p.campaign_id = c.id AND p.date_start >= date('now', '-7 days')) as week_roas
+      (SELECT CASE WHEN SUM(p.spend) > 0 THEN SUM(p.conversion_value) / SUM(p.spend) ELSE 0 END FROM performance p WHERE p.campaign_id = c.id AND p.date_start >= date('now', '-7 days')) as week_roas
     FROM campaigns c
     WHERE c.status = 'ACTIVE'
       AND (c.stop_time IS NULL OR c.stop_time > datetime('now'))
@@ -264,7 +264,7 @@ app.get('/api/performance/timeline', (req, res) => {
       SUM(spend) as spend,
       SUM(conversions) as conversions,
       SUM(conversion_value) as value,
-      AVG(ctr) as ctr,
+      CASE WHEN SUM(impressions) > 0 THEN CAST(SUM(clicks) AS REAL) / SUM(impressions) ELSE 0 END as ctr,
       CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
       CASE WHEN SUM(spend) > 0 THEN SUM(conversion_value) / SUM(spend) ELSE 0 END as roas
     FROM performance
@@ -633,6 +633,63 @@ app.post('/api/meta/creative/direct', async (req, res) => {
 });
 
 // ─── Google Ads Creative Endpoints ────────────────────────────
+
+/** GET /api/google/pmax-campaigns — list PMAX campaigns from Google Ads API */
+app.get('/api/google/pmax-campaigns', async (req, res) => {
+  try {
+    const google = getGoogleClient();
+    if (!google._configured) return res.status(503).json({ error: 'Google Ads client not configured' });
+    const campaigns = await google.getPmaxCampaigns();
+    res.json(campaigns);
+  } catch (e) {
+    logger.error('getPmaxCampaigns error', { error: e.message });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** GET /api/google/campaigns/:campaignId/asset-groups — list asset groups for a PMAX campaign */
+app.get('/api/google/campaigns/:campaignId/asset-groups', async (req, res) => {
+  try {
+    const google = getGoogleClient();
+    if (!google._configured) return res.status(503).json({ error: 'Google Ads client not configured' });
+    const groups = await google.getAssetGroups(req.params.campaignId);
+    res.json(groups);
+  } catch (e) {
+    logger.error('getAssetGroups error', { error: e.message });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** GET /api/google/asset-groups/:assetGroupId/asset-counts — current asset counts per field type */
+app.get('/api/google/asset-groups/:assetGroupId/asset-counts', async (req, res) => {
+  try {
+    const google = getGoogleClient();
+    if (!google._configured) return res.status(503).json({ error: 'Google Ads client not configured' });
+    const counts = await google.getAssetGroupAssetCounts(req.params.assetGroupId);
+    res.json(counts);
+  } catch (e) {
+    logger.error('getAssetGroupAssetCounts error', { error: e.message });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** POST /api/google/asset-groups/:assetGroupId/assets — add images to existing asset group */
+app.post('/api/google/asset-groups/:assetGroupId/assets', async (req, res) => {
+  const { images } = req.body; // [{base64, fieldType, name}]
+  if (!Array.isArray(images) || images.length === 0) {
+    return res.status(400).json({ error: 'images array required' });
+  }
+  try {
+    const google = getGoogleClient();
+    if (!google._configured) return res.status(503).json({ error: 'Google Ads client not configured' });
+    const result = await google.addAssetsToAssetGroup(req.params.assetGroupId, images);
+    res.json({ success: true, result });
+  } catch (e) {
+    const detail = e?.errors?.[0]?.error_code || e?.code || e?.message || String(e);
+    logger.error('addAssetsToAssetGroup error', { message: e.message, detail, stack: e.stack?.slice(0, 300) });
+    res.status(500).json({ error: e.message || '알 수 없는 오류', detail });
+  }
+});
 
 /** GET /api/google/campaigns/:campaignId/adgroups — list ad groups for a campaign */
 app.get('/api/google/campaigns/:campaignId/adgroups', async (req, res) => {
@@ -1070,6 +1127,47 @@ app.get('/api/ad-performance/filters', (req, res) => {
   res.json({ campaigns, adsets });
 });
 
+/** GET /api/google/asset-grades — Individual asset performance grades */
+app.get('/api/google/asset-grades', (req, res) => {
+  const { campaign_id, label } = req.query;
+  const ALLOWED_LABELS = ['BEST', 'GOOD', 'LOW', 'LEARNING', 'PENDING'];
+
+  let query = `SELECT * FROM google_asset_grades WHERE 1=1`;
+  const params = [];
+
+  if (campaign_id) { query += ` AND campaign_id = ?`; params.push(campaign_id); }
+  if (label && ALLOWED_LABELS.includes(label.toUpperCase())) {
+    query += ` AND performance_label = ?`; params.push(label.toUpperCase());
+  }
+  query += ` ORDER BY
+    CASE performance_label
+      WHEN 'BEST' THEN 1 WHEN 'GOOD' THEN 2
+      WHEN 'LEARNING' THEN 3 WHEN 'PENDING' THEN 4 WHEN 'LOW' THEN 5 ELSE 6
+    END, campaign_name, ad_group_name`;
+
+  const rows = db.prepare(query).all(...params);
+  res.json(rows);
+});
+
+/** GET /api/google/pmax-asset-performance — PMAX per-asset performance */
+app.get('/api/google/pmax-asset-performance', async (req, res) => {
+  const { date_from, date_to, campaign_id } = req.query;
+  try {
+    const google = getGoogleClient();
+    if (!google._configured) return res.status(503).json({ error: 'Google Ads client not configured' });
+    const campaignIds = campaign_id ? [String(campaign_id)] : [];
+    const rows = await google.getPmaxAssetPerformance({
+      dateFrom: date_from,
+      dateTo: date_to,
+      campaignIds,
+    });
+    res.json(rows);
+  } catch (e) {
+    logger.error('pmax-asset-performance error', { error: e.message });
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── LOW #11: Chat Endpoint (connects dashboard to AdManagerSkill) ──
 import { AdManagerSkill } from './openclaw-skills/ad-manager.skill.js';
 const chatSkill = new AdManagerSkill();
@@ -1133,6 +1231,20 @@ app.get('/api/settings/alert-thresholds', (req, res) => {
     cpaMax: parseFloat(process.env.ALERT_CPA_THRESHOLD || '50000'),
     budgetBurnRate: parseFloat(process.env.ALERT_BUDGET_BURN_RATE || '0.85'),
   });
+});
+
+app.get('/api/settings/collect-interval', (req, res) => {
+  res.json({ intervalMinutes: parseInt(process.env.COLLECT_INTERVAL_MINUTES || '15') });
+});
+
+app.post('/api/settings/collect-interval', mutationLimiter, (req, res) => {
+  const { intervalMinutes } = req.body;
+  const val = parseInt(intervalMinutes);
+  if (!val || val < 1 || val > 1440) {
+    return res.status(400).json({ error: 'intervalMinutes must be between 1 and 1440' });
+  }
+  collector.reschedule(val);
+  res.json({ success: true, intervalMinutes: val });
 });
 
 app.post('/api/settings/alert-thresholds', mutationLimiter, (req, res) => {

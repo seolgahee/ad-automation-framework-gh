@@ -268,6 +268,27 @@ export function initDatabase() {
       memo      TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS google_asset_grades (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      asset_id          TEXT NOT NULL,
+      asset_name        TEXT,
+      asset_text        TEXT,
+      image_url         TEXT,
+      youtube_id        TEXT,
+      field_type        TEXT,
+      performance_label TEXT,
+      campaign_id       TEXT NOT NULL,
+      campaign_name     TEXT,
+      ad_group_id       TEXT,
+      ad_group_name     TEXT,
+      ad_id             TEXT,
+      collected_at      TEXT DEFAULT (datetime('now')),
+      UNIQUE(asset_id, ad_group_id, field_type)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_asset_grades_campaign ON google_asset_grades(campaign_id);
+    CREATE INDEX IF NOT EXISTS idx_asset_grades_label ON google_asset_grades(performance_label);
   `);
 
   logger.info('Database initialized', { path: DB_PATH });

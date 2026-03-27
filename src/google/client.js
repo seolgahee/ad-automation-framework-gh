@@ -853,6 +853,162 @@ export class GoogleAdsClient extends BaseAdsClient {
     }));
   }
 
+  /** List all PMAX campaigns (advertising_channel_sub_type = PERFORMANCE_MAX) */
+  async getPmaxCampaigns() {
+    this._ensureConfigured();
+    const rows = await this._withTimeout(this.customer.query(`
+      SELECT
+        campaign.id,
+        campaign.name,
+        campaign.status,
+        campaign.advertising_channel_type,
+        campaign.advertising_channel_sub_type
+      FROM campaign
+      WHERE campaign.advertising_channel_type = 'PERFORMANCE_MAX'
+        AND campaign.status != 'REMOVED'
+      ORDER BY campaign.name
+    `), 'getPmaxCampaigns');
+    return rows.map(r => ({
+      id: String(r.campaign.id),
+      name: r.campaign.name,
+      status: r.campaign.status,
+    }));
+  }
+
+  /** List asset groups for a PMAX campaign */
+  async getAssetGroups(campaignId) {
+    this._ensureConfigured();
+    const rows = await this._withTimeout(this.customer.query(`
+      SELECT
+        asset_group.id,
+        asset_group.name,
+        asset_group.status,
+        campaign.id,
+        campaign.name
+      FROM asset_group
+      WHERE campaign.id = '${campaignId}'
+        AND asset_group.status != 'REMOVED'
+      ORDER BY asset_group.name
+    `), 'getAssetGroups');
+    return rows.map(r => ({
+      id: String(r.asset_group.id),
+      name: r.asset_group.name,
+      status: r.asset_group.status,
+      campaignId: String(r.campaign.id),
+      campaignName: r.campaign.name,
+    }));
+  }
+
+  /**
+   * Get current asset counts per field type for an asset group.
+   * Used to validate against PMAX per-field-type limits before adding.
+   */
+  async getAssetGroupAssetCounts(assetGroupId) {
+    this._ensureConfigured();
+    // fieldType numbers: MARKETING_IMAGE=5, SQUARE_MARKETING_IMAGE=19, PORTRAIT_MARKETING_IMAGE=20, LOGO=21
+    const FIELD_TYPE_NUM_TO_NAME = { 5: 'MARKETING_IMAGE', 19: 'SQUARE_MARKETING_IMAGE', 20: 'PORTRAIT_MARKETING_IMAGE', 21: 'LOGO' };
+    const rows = await this._withTimeout(this.customer.query(`
+      SELECT
+        asset_group_asset.field_type,
+        asset_group_asset.status
+      FROM asset_group_asset
+      WHERE asset_group.id = '${assetGroupId}'
+        AND asset_group_asset.status != 'REMOVED'
+    `), 'getAssetGroupAssetCounts');
+    const counts = {};
+    for (const r of rows) {
+      const ft = FIELD_TYPE_NUM_TO_NAME[r.asset_group_asset.field_type] || String(r.asset_group_asset.field_type);
+      counts[ft] = (counts[ft] || 0) + 1;
+    }
+    return counts;
+  }
+
+  /**
+   * Add image assets to an existing PMAX asset group.
+   * @param {string} assetGroupId
+   * @param {Array<{base64: string, fieldType: string, name: string}>} images
+   *   fieldType: 'MARKETING_IMAGE' | 'SQUARE_MARKETING_IMAGE' | 'PORTRAIT_MARKETING_IMAGE' | 'LOGO'
+   */
+  async addAssetsToAssetGroup(assetGroupId, images = []) {
+    this._ensureConfigured();
+    if (images.length === 0) throw new Error('No images provided');
+
+    // PMAX per-field-type limits
+    const FIELD_LIMITS = {
+      MARKETING_IMAGE: 20,
+      SQUARE_MARKETING_IMAGE: 20,
+      PORTRAIT_MARKETING_IMAGE: 20,
+      LOGO: 5,
+    };
+
+    // Check existing counts before attempting mutation
+    const currentCounts = await this.getAssetGroupAssetCounts(assetGroupId);
+    logger.info('Current asset counts', { assetGroupId, currentCounts });
+
+    // Count how many of each type we're trying to add
+    const addCounts = {};
+    for (const img of images) {
+      addCounts[img.fieldType] = (addCounts[img.fieldType] || 0) + 1;
+    }
+
+    const violations = [];
+    for (const [ft, addCount] of Object.entries(addCounts)) {
+      const current = currentCounts[ft] || 0;
+      const limit = FIELD_LIMITS[ft] ?? 20;
+      if (current + addCount > limit) {
+        violations.push(`${ft}: 현재 ${current}개, 추가 ${addCount}개 → 한도 ${limit}개 초과`);
+      }
+    }
+    if (violations.length > 0) {
+      throw new Error(`에셋 한도 초과:\n${violations.join('\n')}`);
+    }
+
+    const assetGroupRn = `customers/${this.customerId}/assetGroups/${assetGroupId}`;
+    const FIELD_TYPE_ENUM = {
+      MARKETING_IMAGE: enums.AssetFieldType.MARKETING_IMAGE,
+      SQUARE_MARKETING_IMAGE: enums.AssetFieldType.SQUARE_MARKETING_IMAGE,
+      PORTRAIT_MARKETING_IMAGE: enums.AssetFieldType.PORTRAIT_MARKETING_IMAGE,
+      LOGO: enums.AssetFieldType.LOGO,
+    };
+
+    const operations = [];
+    const tempNames = [];
+
+    images.forEach((img, i) => {
+      const tempRn = `customers/${this.customerId}/assets/-${100 + i}`;
+      tempNames.push({ tempRn, fieldType: img.fieldType });
+      operations.push({
+        entity: 'asset',
+        operation: 'create',
+        resource: {
+          resource_name: tempRn,
+          name: img.name || `asset_${Date.now()}_${i}`,
+          type: enums.AssetType.IMAGE,
+          image_asset: { data: Buffer.from(img.base64, 'base64') },
+        },
+      });
+    });
+
+    tempNames.forEach(({ tempRn, fieldType }) => {
+      operations.push({
+        entity: 'asset_group_asset',
+        operation: 'create',
+        resource: {
+          asset_group: assetGroupRn,
+          asset: tempRn,
+          field_type: FIELD_TYPE_ENUM[fieldType] ?? FIELD_TYPE_ENUM.MARKETING_IMAGE,
+        },
+      });
+    });
+
+    const result = await this._withTimeout(
+      this.customer.mutateResources(operations),
+      'addAssetsToAssetGroup'
+    );
+    logger.info('Assets added to asset group', { assetGroupId, count: images.length });
+    return result;
+  }
+
   // ─── Reporting / Insights ──────────────────────────────────
 
   /** Validate date string format (YYYY-MM-DD) to prevent GAQL injection */
@@ -1036,6 +1192,206 @@ export class GoogleAdsClient extends BaseAdsClient {
     const all = [...standardAds, ...pmaxAds];
     logger.info(`Fetched ${all.length} Google ad-level insight rows (${standardAds.length} standard + ${pmaxAds.length} PMAX)`, { from, to });
     return all;
+  }
+
+  /** Individual asset performance grades via ad_group_ad_asset_view (RSA/RDA) */
+  async getAssetGrades(campaignIds = []) {
+    this._ensureConfigured();
+
+    if (campaignIds.length === 0) {
+      logger.warn('getAssetGrades: no campaignIds provided, skipping');
+      return [];
+    }
+
+    const idList = campaignIds.map(id => `'${id}'`).join(', ');
+
+    const rows = await this._withTimeout(this.customer.query(`
+      SELECT
+        ad_group_ad_asset_view.field_type,
+        ad_group_ad_asset_view.performance_label,
+        asset.id,
+        asset.name,
+        asset.image_asset.full_size.url,
+        asset.youtube_video_asset.youtube_video_id,
+        campaign.id,
+        campaign.name,
+        ad_group.id,
+        ad_group.name,
+        ad_group_ad.ad.id
+      FROM ad_group_ad_asset_view
+      WHERE campaign.status = 'ENABLED'
+        AND ad_group.status = 'ENABLED'
+        AND ad_group_ad.status = 'ENABLED'
+        AND ad_group_ad_asset_view.enabled = TRUE
+        AND campaign.id IN (${idList})
+        AND ad_group_ad_asset_view.field_type IN (
+          'SQUARE_MARKETING_IMAGE',
+          'PORTRAIT_MARKETING_IMAGE',
+          'MARKETING_IMAGE',
+          'YOUTUBE_VIDEO'
+        )
+    `), 'getAssetGrades');
+
+    logger.info(`Fetched ${rows.length} Google asset grade rows (before dedup)`);
+
+    // 같은 에셋이 여러 광고그룹에 쓰일 경우 (asset_id + field_type) 기준으로 중복 제거
+    // 우선순위: BEST > GOOD > LEARNING > PENDING > LOW
+    const LABEL_RANK = { BEST: 1, GOOD: 2, LEARNING: 3, PENDING: 4, LOW: 5 };
+    const dedup = new Map();
+
+    for (const row of rows) {
+      const key = `${row.asset.id}_${row.ad_group_ad_asset_view.field_type}`;
+      const label = row.ad_group_ad_asset_view.performance_label;
+      const existing = dedup.get(key);
+      if (!existing || (LABEL_RANK[label] || 9) < (LABEL_RANK[existing.performanceLabel] || 9)) {
+        dedup.set(key, {
+          assetId: String(row.asset.id),
+          assetName: row.asset.name || '',
+          assetText: null,
+          imageUrl: row.asset.image_asset?.full_size?.url || null,
+          youtubeId: row.asset.youtube_video_asset?.youtube_video_id || null,
+          fieldType: row.ad_group_ad_asset_view.field_type,
+          performanceLabel: label,
+          campaignId: String(row.campaign.id),
+          campaignName: row.campaign.name,
+          adGroupId: String(row.ad_group.id),
+          adGroupName: row.ad_group.name,
+          adId: String(row.ad_group_ad.ad.id),
+        });
+      }
+    }
+
+    const result = [...dedup.values()];
+    logger.info(`Google asset grades: ${rows.length} → ${result.length} after dedup`);
+    return result;
+  }
+
+  /** PMAX asset group insights only (lighter than full getAdInsights) */
+  async getPmaxAssetInsights({ dateFrom, dateTo } = {}) {
+    this._ensureConfigured();
+    const today = new Date().toISOString().split('T')[0];
+    const from = this._validateDate(dateFrom || today);
+    const to = this._validateDate(dateTo || today);
+
+    const rows = await this._withTimeout(this.customer.query(`
+      SELECT
+        asset_group.id,
+        asset_group.name,
+        campaign.id,
+        campaign.name,
+        metrics.impressions,
+        metrics.clicks,
+        metrics.cost_micros,
+        metrics.conversions,
+        metrics.conversions_value
+      FROM asset_group
+      WHERE segments.date BETWEEN '${from}' AND '${to}'
+        AND campaign.status != 'REMOVED'
+      ORDER BY metrics.cost_micros DESC
+    `), 'getPmaxAssetInsights');
+
+    return rows.map(row => {
+      const impressions = Number(row.metrics.impressions || 0);
+      const clicks = Number(row.metrics.clicks || 0);
+      const spend = Number(row.metrics.cost_micros || 0) / 1_000_000;
+      return {
+        adId: `ag_${row.asset_group.id}`,
+        adName: row.asset_group.name || '',
+        adGroupId: `ag_${row.asset_group.id}`,
+        adGroupName: row.asset_group.name || '',
+        campaignId: String(row.campaign.id),
+        campaignName: row.campaign.name,
+        impressions,
+        clicks,
+        spend,
+        conversions: Number(row.metrics.conversions || 0),
+        conversionValue: Number(row.metrics.conversions_value || 0),
+        ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
+        cpc: clicks > 0 ? spend / clicks : 0,
+        cpm: impressions > 0 ? (spend / impressions) * 1000 : 0,
+      };
+    });
+  }
+
+  /**
+   * Per-asset performance for PMAX campaigns.
+   * asset_group_asset resource does not expose raw metrics — instead we
+   * Query asset_group_asset directly with metrics — per-asset impressions,
+   * clicks, cost, conversions for PMAX campaigns.
+   */
+  async getPmaxAssetPerformance({ dateFrom, dateTo, campaignIds = [] } = {}) {
+    this._ensureConfigured();
+    const today = new Date().toISOString().split('T')[0];
+    const from = this._validateDate(dateFrom || today);
+    const to = this._validateDate(dateTo || today);
+
+    let conditions = [
+      `segments.date BETWEEN '${from}' AND '${to}'`,
+      `campaign.status = 'ENABLED'`,
+      `asset_group.status = 'ENABLED'`,
+      `asset_group_asset.status = 'ENABLED'`,
+      `asset_group_asset.field_type IN ('SQUARE_MARKETING_IMAGE','PORTRAIT_MARKETING_IMAGE','MARKETING_IMAGE','YOUTUBE_VIDEO')`,
+    ];
+    if (campaignIds.length > 0) {
+      const idList = campaignIds.map(id => `'${id}'`).join(', ');
+      conditions.push(`campaign.id IN (${idList})`);
+    }
+
+    const rows = await this._withTimeout(
+      this.customer.query(`
+        SELECT
+          asset.id,
+          asset.name,
+          asset.image_asset.full_size.url,
+          asset.youtube_video_asset.youtube_video_id,
+          asset_group_asset.field_type,
+          asset_group_asset.source,
+          asset_group.id,
+          asset_group.name,
+          campaign.id,
+          campaign.name,
+          metrics.impressions,
+          metrics.clicks,
+          metrics.cost_micros,
+          metrics.conversions,
+          metrics.conversions_value
+        FROM asset_group_asset
+        WHERE ${conditions.join('\n          AND ')}
+        ORDER BY metrics.cost_micros DESC
+      `),
+      'getPmaxAssetPerformance'
+    );
+
+    logger.info(`PMAX asset_group_asset direct metrics: ${rows.length} rows`);
+
+    return rows.map(row => {
+      const impressions = Number(row.metrics.impressions || 0);
+      const clicks = Number(row.metrics.clicks || 0);
+      const spend = Number(row.metrics.cost_micros || 0) / 1_000_000;
+      const conversions = Number(row.metrics.conversions || 0);
+      const conversionValue = Number(row.metrics.conversions_value || 0);
+      return {
+        assetId: String(row.asset.id),
+        assetName: row.asset.name || '',
+        imageUrl: row.asset.image_asset?.full_size?.url || null,
+        youtubeId: row.asset.youtube_video_asset?.youtube_video_id || null,
+        fieldType: row.asset_group_asset.field_type,
+        source: row.asset_group_asset.source || '',
+        assetGroupId: String(row.asset_group.id),
+        assetGroupName: row.asset_group.name || '',
+        campaignId: String(row.campaign.id),
+        campaignName: row.campaign.name || '',
+        impressions,
+        clicks,
+        spend,
+        conversions,
+        conversionValue,
+        ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
+        cpc: clicks > 0 ? spend / clicks : 0,
+        cpm: impressions > 0 ? (spend / impressions) * 1000 : 0,
+        roas: spend > 0 ? conversionValue / spend : 0,
+      };
+    });
   }
 
   /** Quick today spend check */

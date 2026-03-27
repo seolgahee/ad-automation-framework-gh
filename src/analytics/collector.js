@@ -31,12 +31,23 @@ export class DataCollector extends EventEmitter {
     // Run immediately on start
     this.collectAll().catch(err => logger.error('Initial collection failed', { error: err.message }));
 
-    // Then schedule
-    cron.schedule(`*/${interval} * * * *`, () => {
+    this._scheduleTask(interval);
+    logger.info(`Data collector started — every ${interval} minutes`);
+  }
+
+  _scheduleTask(interval) {
+    if (this.cronTask) this.cronTask.stop();
+    this.cronTask = cron.schedule(`*/${interval} * * * *`, () => {
       this.collectAll().catch(err => logger.error('Scheduled collection failed', { error: err.message }));
     });
+    this.intervalMinutes = interval;
+  }
 
-    logger.info(`Data collector started — every ${interval} minutes`);
+  reschedule(newIntervalMinutes) {
+    const interval = Math.max(1, Math.min(parseInt(newIntervalMinutes) || 15, 1440));
+    process.env.COLLECT_INTERVAL_MINUTES = String(interval);
+    this._scheduleTask(interval);
+    logger.info(`Data collector rescheduled — every ${interval} minutes`);
   }
 
   /** Collect from all platforms */
@@ -193,8 +204,92 @@ export class DataCollector extends EventEmitter {
         budget: c.dailyBudget,
       })
     );
-    // TODO: Google ad-level 임시 비활성화 (데이터 과다로 대시보드 느려짐, Meta 소재 이미지 수집 선행 테스트 중)
-    // await this._collectGoogleAdLevel();
+    await this._collectGooglePmaxAdLevel();
+    await this._collectGoogleAssetGrades();
+  }
+
+  /** Collect Google asset performance grades (RSA/RDA) */
+  async _collectGoogleAssetGrades() {
+    // PMAX 캠페인은 asset_group을 사용하므로 제외, DG/Display 캠페인만
+    const activeCampaigns = db.prepare(`
+      SELECT platform_id FROM campaigns
+      WHERE platform = 'google' AND status = 'ACTIVE'
+        AND name NOT LIKE '%PMAX%'
+    `).all();
+
+    if (activeCampaigns.length === 0) {
+      logger.info('google asset grades: no active non-PMAX campaigns, skipping');
+      return;
+    }
+
+    const campaignIds = activeCampaigns.map(c => c.platform_id);
+    logger.info(`google asset grades: querying ${campaignIds.length} campaigns`);
+
+    const rows = await this.google.getAssetGrades(campaignIds);
+
+    // 매 수집마다 전체 교체 (오래된 캠페인 데이터 제거)
+    db.prepare(`DELETE FROM google_asset_grades`).run();
+    if (!rows.length) return;
+
+    const upsert = db.prepare(`
+      INSERT INTO google_asset_grades
+        (asset_id, asset_name, asset_text, image_url, youtube_id, field_type,
+         performance_label, campaign_id, campaign_name, ad_group_id, ad_group_name, ad_id, collected_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(asset_id, ad_group_id, field_type) DO UPDATE SET
+        performance_label=excluded.performance_label,
+        asset_name=excluded.asset_name,
+        asset_text=excluded.asset_text,
+        image_url=excluded.image_url,
+        collected_at=datetime('now')
+    `);
+
+    const transaction = db.transaction(() => {
+      for (const r of rows) {
+        upsert.run(
+          r.assetId, r.assetName, r.assetText, r.imageUrl, r.youtubeId,
+          r.fieldType, r.performanceLabel,
+          `google_${r.campaignId}`, r.campaignName,
+          r.adGroupId, r.adGroupName, r.adId
+        );
+      }
+    });
+    transaction();
+    logger.info(`google asset grades: synced ${rows.length} rows`);
+  }
+
+  /** Collect Google PMAX asset group performance */
+  async _collectGooglePmaxAdLevel() {
+    const rows = await this.google.getPmaxAssetInsights();
+    if (!rows.length) return;
+
+    const today = new Date().toISOString().split('T')[0];
+    const upsert = db.prepare(`
+      INSERT INTO ad_performance
+        (ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name, platform, date_start,
+         impressions, clicks, spend, conversions, conversion_value, ctr, cpc, cpm, roas, cpa)
+      VALUES (?, ?, ?, ?, ?, ?, 'google', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(ad_id, platform, date_start) DO UPDATE SET
+        impressions=excluded.impressions, clicks=excluded.clicks, spend=excluded.spend,
+        conversions=excluded.conversions, conversion_value=excluded.conversion_value,
+        ctr=excluded.ctr, cpc=excluded.cpc, cpm=excluded.cpm, roas=excluded.roas, cpa=excluded.cpa,
+        collected_at=datetime('now')
+    `);
+
+    const transaction = db.transaction(() => {
+      for (const r of rows) {
+        const roas = r.spend > 0 ? r.conversionValue / r.spend : 0;
+        const cpa = r.conversions > 0 ? r.spend / r.conversions : 0;
+        upsert.run(
+          r.adId, r.adName, r.adGroupId, r.adGroupName,
+          `google_${r.campaignId}`, r.campaignName, today,
+          r.impressions, r.clicks, r.spend, r.conversions, r.conversionValue,
+          r.ctr, r.cpc, r.cpm, roas, cpa
+        );
+      }
+    });
+    transaction();
+    logger.info(`google PMAX: synced ${rows.length} asset group rows`);
   }
 
   /** Collect Google ad-level insights */

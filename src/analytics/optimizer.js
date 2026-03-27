@@ -41,8 +41,8 @@ export class Optimizer {
         SUM(p.spend) as total_spend,
         SUM(p.conversions) as total_conversions,
         SUM(p.conversion_value) as total_value,
-        AVG(p.ctr) as avg_ctr,
-        AVG(p.cpc) as avg_cpc,
+        CASE WHEN SUM(p.impressions) > 0 THEN CAST(SUM(p.clicks) AS REAL) / SUM(p.impressions) ELSE 0 END as avg_ctr,
+        CASE WHEN SUM(p.clicks) > 0 THEN SUM(p.spend) / SUM(p.clicks) ELSE 0 END as avg_cpc,
         CASE WHEN SUM(p.spend) > 0 THEN SUM(p.conversion_value) / SUM(p.spend) ELSE 0 END as roas,
         CASE WHEN SUM(p.conversions) > 0 THEN SUM(p.spend) / SUM(p.conversions) ELSE 0 END as cpa
       FROM campaigns c

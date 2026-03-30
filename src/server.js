@@ -687,13 +687,28 @@ app.post('/api/meta/creative/direct', async (req, res) => {
 
 const libraryUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
 
-/** GET /api/creative-library — 라이브러리 전체 목록 (image_data 제외) */
-app.get('/api/creative-library', (req, res) => {
+/** GET /api/creative-library — 라이브러리 전체 목록 (lib_thumb base64 포함) */
+app.get('/api/creative-library', async (req, res) => {
   const rows = db.prepare(
-    `SELECT id, name, original_name, width, height, file_size, mime_type, ad_id, created_at
+    `SELECT id, name, original_name, width, height, file_size, mime_type, ad_id, persona, desire, awareness, image_data, created_at
      FROM creative_library ORDER BY created_at DESC`
   ).all();
-  res.json(rows);
+
+  const enriched = await Promise.all(rows.map(async row => {
+    const { image_data, ...rest } = row;
+    if (!image_data) return rest;
+    try {
+      const buf = await sharp(Buffer.from(image_data))
+        .resize(400, 400, { fit: 'cover', position: 'centre' })
+        .jpeg({ quality: 75 })
+        .toBuffer();
+      return { ...rest, lib_thumb: `data:image/jpeg;base64,${buf.toString('base64')}` };
+    } catch (_) {
+      return rest;
+    }
+  }));
+
+  res.json(enriched);
 });
 
 /** POST /api/creative-library/upload — 이미지 업로드 (여러 장, BLOB 저장) */
@@ -753,6 +768,16 @@ app.patch('/api/creative-library/:id/ad-mapping', (req, res) => {
   const row = db.prepare(`SELECT id FROM creative_library WHERE id = ?`).get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   db.prepare(`UPDATE creative_library SET ad_id = ? WHERE id = ?`).run(ad_id || null, req.params.id);
+  res.json({ success: true });
+});
+
+/** PATCH /api/creative-library/:id/pda — P.D.A 태그 저장 */
+app.patch('/api/creative-library/:id/pda', (req, res) => {
+  const { persona, desire, awareness } = req.body;
+  const row = db.prepare(`SELECT id FROM creative_library WHERE id = ?`).get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  db.prepare(`UPDATE creative_library SET persona = ?, desire = ?, awareness = ? WHERE id = ?`)
+    .run(persona || null, desire || null, awareness || null, req.params.id);
   res.json({ success: true });
 });
 
@@ -822,10 +847,10 @@ app.get('/api/meta/top-creatives', async (req, res) => {
       CASE WHEN SUM(ap.spend) > 0 THEN SUM(ap.conversion_value) / SUM(ap.spend) ELSE 0 END as roas,
       CASE WHEN SUM(ap.impressions) > 0 THEN CAST(SUM(ap.clicks) AS REAL) / SUM(ap.impressions) * 100 ELSE 0 END as ctr,
       MAX(ap.image_url) as image_url,
-      (SELECT id FROM creative_library
-       WHERE ad_id = ap.ad_id
-       ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC
-       LIMIT 1) as library_id
+      (SELECT id FROM creative_library WHERE ad_id = ap.ad_id ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC LIMIT 1) as library_id,
+      (SELECT persona FROM creative_library WHERE ad_id = ap.ad_id ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC LIMIT 1) as persona,
+      (SELECT desire FROM creative_library WHERE ad_id = ap.ad_id ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC LIMIT 1) as desire,
+      (SELECT awareness FROM creative_library WHERE ad_id = ap.ad_id ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC LIMIT 1) as awareness
     FROM ad_performance ap
     WHERE ap.platform = 'meta'
       AND ap.date_start >= date('now', ? || ' days')
@@ -1357,10 +1382,10 @@ app.get('/api/ad-performance', async (req, res) => {
       CASE WHEN SUM(ap.conversions) > 0 THEN SUM(ap.spend) / SUM(ap.conversions) ELSE 0 END as cpa,
       MAX(ap.collected_at) as collected_at,
       MAX(ap.image_url) as image_url,
-      (SELECT id FROM creative_library
-       WHERE ad_id = ap.ad_id
-       ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC
-       LIMIT 1) as library_id
+      (SELECT id FROM creative_library WHERE ad_id = ap.ad_id ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC LIMIT 1) as library_id,
+      (SELECT persona FROM creative_library WHERE ad_id = ap.ad_id ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC LIMIT 1) as persona,
+      (SELECT desire FROM creative_library WHERE ad_id = ap.ad_id ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC LIMIT 1) as desire,
+      (SELECT awareness FROM creative_library WHERE ad_id = ap.ad_id ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC LIMIT 1) as awareness
     FROM ad_performance ap
     WHERE ${since && until ? 'ap.date_start >= ? AND ap.date_start <= ?' : "ap.date_start >= date('now', ? || ' days')"}
   `;

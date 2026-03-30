@@ -3328,11 +3328,9 @@
         ws.current.onclose = () => setConnected(false);
         ws.current.onmessage = (e) => {
           const msg = JSON.parse(e.data);
-          if (msg.type === 'performance_update') { fetchData(); fetchAdPerformance(); }
           if (['creative_assembled', 'creative_registered', 'pipeline_complete', 'ab_test_created', 'ab_test_evaluated', 'audience_created'].includes(msg.type)) fetchContentData();
         };
-        const interval = setInterval(fetchData, 60000);
-        return () => { clearInterval(interval); ws.current?.close(); };
+        return () => { ws.current?.close(); };
       }, [fetchData, fetchContentData, fetchAdPerformance, fetchAdPerfFilters]);
 
       const handleCreativeUpload = async () => {
@@ -4282,6 +4280,14 @@
                           </span>
                         )}
                       </div>
+                      {/* P.D.A 태그 */}
+                      {(row.persona || row.desire || row.awareness) && (
+                        <div className="px-3 pt-1 flex flex-wrap gap-1">
+                          {row.persona && <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-100 text-purple-700">P {row.persona}</span>}
+                          {row.desire  && <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-blue-100 text-blue-700">D {row.desire}</span>}
+                          {row.awareness && <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-100 text-emerald-700">A {row.awareness}</span>}
+                        </div>
+                      )}
 
                       {/* Ad info */}
                       <div className="px-3 pt-1.5 pb-1">
@@ -4396,6 +4402,15 @@
           setEditingId(null);
         };
 
+        const savePda = async (id, persona, desire, awareness) => {
+          await apiFetch(`${API}/creative-library/${id}/pda`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ persona, desire, awareness }),
+          });
+          setLibrary(prev => prev.map(i => i.id === id ? { ...i, persona, desire, awareness } : i));
+        };
+
         const saveMapping = async (libId, adId) => {
           await apiFetch(`${API}/creative-library/${libId}/ad-mapping`, {
             method: 'PATCH', body: JSON.stringify({ ad_id: adId || null }),
@@ -4471,10 +4486,12 @@
                   return (
                     <div key={item.id} className="rounded-2xl border border-ppl-border bg-white overflow-hidden shadow-sm hover:shadow-md transition-shadow">
                       {/* 썸네일 */}
-                      <div className="aspect-video bg-ppl-bg relative">
-                        <img src={`${THUMB}/library/${item.id}`} alt={item.name}
-                          className="w-full h-full object-cover"
-                          onError={e => { e.target.style.display = 'none'; }} />
+                      <div className="aspect-square bg-ppl-bg relative">
+                        {item.lib_thumb ? (
+                          <img src={item.lib_thumb} alt={item.name} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-ppl-sub text-xs">이미지 없음</div>
+                        )}
                         {item.width && (
                           <span className="absolute bottom-1.5 left-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-black/50 text-white">
                             {item.width}×{item.height}
@@ -4528,17 +4545,19 @@
                             <button onClick={() => setMappingId(null)} className="text-[10px] text-ppl-sub hover:text-ppl-text">취소</button>
                           </div>
                         ) : item.ad_id ? (
-                          <div className="flex items-center gap-1.5">
-                            <div className="flex-1 min-w-0">
-                              <p className="text-[10px] text-blue-600 font-medium truncate" title={linkedAd?.ad_name || item.ad_id}>
-                                {linkedAd?.ad_name || item.ad_id}
-                              </p>
-                              {linkedAd?.campaign_name && (
-                                <p className="text-[10px] text-ppl-sub truncate">{linkedAd.campaign_name}</p>
-                              )}
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-1.5">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[10px] text-blue-600 font-medium truncate" title={linkedAd?.ad_name || item.ad_id}>
+                                  {linkedAd?.ad_name || item.ad_id}
+                                </p>
+                                {linkedAd?.campaign_name && (
+                                  <p className="text-[10px] text-ppl-sub truncate">{linkedAd.campaign_name}</p>
+                                )}
+                              </div>
+                              <button onClick={() => setMappingId(item.id)}
+                                className="text-[10px] text-blue-400 hover:text-blue-600 shrink-0 font-medium">변경</button>
                             </div>
-                            <button onClick={() => setMappingId(item.id)}
-                              className="text-[10px] text-blue-400 hover:text-blue-600 shrink-0 font-medium">변경</button>
                           </div>
                         ) : (
                           <button onClick={() => setMappingId(item.id)}
@@ -4546,6 +4565,32 @@
                             + Meta 광고 연결
                           </button>
                         )}
+                      </div>
+
+                      {/* P.D.A 태그 */}
+                      <div className="px-3 pb-3 space-y-1.5 border-t border-ppl-border pt-2.5">
+                        <p className="text-[9px] font-bold text-ppl-sub uppercase tracking-wider">P · D · A</p>
+                        {[
+                          { key: 'persona',   label: 'P', color: 'text-purple-600', placeholder: '페르소나 (15자 이내)' },
+                          { key: 'desire',    label: 'D', color: 'text-blue-600',   placeholder: '욕구/동기 (15자 이내)' },
+                          { key: 'awareness', label: 'A', color: 'text-emerald-600', placeholder: '인지 단계 (15자 이내)' },
+                        ].map(({ key, label, color, placeholder }) => (
+                          <div key={key} className="flex items-center gap-1.5">
+                            <span className={`text-[10px] font-bold w-3 shrink-0 ${color}`}>{label}</span>
+                            <input
+                              type="text"
+                              maxLength={15}
+                              defaultValue={item[key] || ''}
+                              placeholder={placeholder}
+                              onBlur={e => savePda(item.id,
+                                key === 'persona'   ? e.target.value : (item.persona   || null),
+                                key === 'desire'    ? e.target.value : (item.desire    || null),
+                                key === 'awareness' ? e.target.value : (item.awareness || null),
+                              )}
+                              className="flex-1 text-[10px] border border-ppl-border rounded px-1.5 py-1 bg-white placeholder:text-gray-300"
+                            />
+                          </div>
+                        ))}
                       </div>
                     </div>
                   );

@@ -114,6 +114,12 @@ function migrateCreativeLibraryBlob() {
     db.exec(`ALTER TABLE creative_library ADD COLUMN ad_id TEXT`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_creative_library_adid ON creative_library(ad_id)`);
   }
+  if (!cols.includes('persona')) {
+    logger.info('Adding persona/desire/awareness columns to creative_library');
+    db.exec(`ALTER TABLE creative_library ADD COLUMN persona TEXT`);
+    db.exec(`ALTER TABLE creative_library ADD COLUMN desire TEXT`);
+    db.exec(`ALTER TABLE creative_library ADD COLUMN awareness TEXT`);
+  }
 }
 
 /** Migrate campaigns: add stop_time column if missing */

@@ -92,6 +92,7 @@
     const _host = window.location.hostname || 'localhost';
     const _apiPort = '3099';
     const API = `${window.location.protocol}//${_host}:${_apiPort}/api`;
+    const THUMB = `${window.location.protocol}//${_host}:${_apiPort}/thumbnails`;
     const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${_host}:${_apiPort}/ws`;
 
     // Auth token (set via URL param ?token=xxx or leave empty for dev mode)
@@ -330,6 +331,45 @@
         const [igLoading, setIgLoading] = useState(false);
         const set = (k, v) => setDf(prev => ({ ...prev, [k]: v }));
 
+        // ── 프리셋 관리 (localStorage) ──
+        const PRESET_KEYS = ['campaignId', 'adSetId', 'pageId', 'instagramAccountId', 'link', 'callToAction', 'conversionEvent', 'adStatus'];
+        const [presets, setPresets] = useState(() => {
+          try { return JSON.parse(localStorage.getItem('meta_creative_presets') || '{}'); }
+          catch { return {}; }
+        });
+        const [presetName, setPresetName] = useState('');
+        const [selectedPreset, setSelectedPreset] = useState('');
+
+        const savePreset = () => {
+          const name = presetName.trim();
+          if (!name) return;
+          const entry = Object.fromEntries(PRESET_KEYS.map(k => [k, df[k]]));
+          const updated = { ...presets, [name]: entry };
+          setPresets(updated);
+          localStorage.setItem('meta_creative_presets', JSON.stringify(updated));
+          setPresetName('');
+        };
+
+        const pendingAdSetId = React.useRef(null);
+
+        const loadPreset = (name) => {
+          if (!name || !presets[name]) { setSelectedPreset(''); return; }
+          setSelectedPreset(name);
+          const entry = presets[name];
+          // adSetId는 광고세트 목록 로드 후 적용
+          pendingAdSetId.current = entry.adSetId || null;
+          setDf(prev => ({ ...prev, ...entry, adSetId: '' }));
+          setAdSets([]);
+        };
+
+        const deletePreset = (name) => {
+          const updated = { ...presets };
+          delete updated[name];
+          setPresets(updated);
+          localStorage.setItem('meta_creative_presets', JSON.stringify(updated));
+          if (selectedPreset === name) setSelectedPreset('');
+        };
+
         useEffect(() => {
           setPagesLoading(true);
           apiFetch(`${API}/meta/pages`)
@@ -351,8 +391,18 @@
           set('adSetId', '');
           apiFetch(`${API}/meta/campaigns/${df.campaignId}/adsets`)
             .then(r => r.json())
-            .then(data => { setAdSets(Array.isArray(data) ? data : []); setAdSetsLoading(false); })
-            .catch(() => setAdSetsLoading(false));
+            .then(data => {
+              const list = Array.isArray(data) ? data : [];
+              setAdSets(list);
+              setAdSetsLoading(false);
+              // 프리셋 로드 후 adSetId 복원
+              if (pendingAdSetId.current) {
+                const match = list.find(a => a.id === pendingAdSetId.current);
+                if (match) set('adSetId', pendingAdSetId.current);
+                pendingAdSetId.current = null;
+              }
+            })
+            .catch(() => { setAdSetsLoading(false); pendingAdSetId.current = null; });
         }, [df.campaignId]);
 
         const handleImageUpload = async (file) => {
@@ -419,6 +469,51 @@
 
         return (
           <div className="max-w-2xl space-y-5">
+
+            {/* ── 프리셋 카드 ── */}
+            <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-5 space-y-3">
+              <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="text-violet-500">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+                </svg>
+                프리셋
+                <span className="text-xs font-normal text-ppl-sub">— 자주 쓰는 캠페인/페이지/CTA 조합을 저장·불러오기</span>
+              </p>
+
+              {/* 불러오기 행 */}
+              <div className="flex gap-2">
+                <select value={selectedPreset} onChange={e => loadPreset(e.target.value)}
+                  className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                  <option value="">-- 저장된 프리셋 선택 --</option>
+                  {Object.keys(presets).map(name => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+                {selectedPreset && (
+                  <button onClick={() => deletePreset(selectedPreset)}
+                    title="이 프리셋 삭제"
+                    className="px-3 py-2 rounded-lg border border-red-200 text-red-500 hover:bg-red-50 text-xs font-medium transition-colors">
+                    삭제
+                  </button>
+                )}
+              </div>
+
+              {/* 저장 행 */}
+              <div className="flex gap-2">
+                <input type="text" placeholder="프리셋 이름 (예: 봄_프로모션_구매캠)"
+                  value={presetName} onChange={e => setPresetName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') savePreset(); }}
+                  className="flex-1 text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+                <button onClick={savePreset} disabled={!presetName.trim()}
+                  className="px-4 py-2 rounded-lg bg-violet-500 text-white text-xs font-semibold hover:bg-violet-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap">
+                  현재 설정 저장
+                </button>
+              </div>
+              {Object.keys(presets).length > 0 && (
+                <p className="text-xs text-ppl-sub">저장된 프리셋: {Object.keys(presets).join(', ')}</p>
+              )}
+            </div>
+
             <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
               <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
                 <span className="w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center">1</span>
@@ -432,13 +527,22 @@
               </div>
               <div>
                 <label className="block text-xs font-medium text-ppl-text mb-1.5">캠페인 *</label>
-                <select value={df.campaignId} onChange={e => set('campaignId', e.target.value)}
-                  className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
-                  <option value="">-- 캠페인 선택 --</option>
-                  {campaigns.filter(c => c.platform === 'meta').map(c => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
+                {(() => {
+                  const metaCampaigns = campaigns.filter(c => c.platform === 'meta');
+                  return metaCampaigns.length === 0 ? (
+                    <div className="w-full text-sm border border-amber-200 rounded-lg px-3 py-2 bg-amber-50 text-amber-600">
+                      Meta 캠페인이 없습니다 — 먼저 캠페인을 생성하세요
+                    </div>
+                  ) : (
+                    <select value={df.campaignId} onChange={e => set('campaignId', e.target.value)}
+                      className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                      <option value="">-- 캠페인 선택 ({metaCampaigns.length}개) --</option>
+                      {metaCampaigns.map(c => (
+                        <option key={c.id} value={c.id}>{c.name} · {c.status || c.effective_status || ''}</option>
+                      ))}
+                    </select>
+                  );
+                })()}
               </div>
               <div>
                 <label className="block text-xs font-medium text-ppl-text mb-1.5">광고 세트 (Ad Set) *</label>
@@ -674,7 +778,406 @@
       };
 
       // ─── Meta Creative Settings Panel (defined outside App to prevent remount) ───
+      // ─── Meta Bulk Upload Form ───
+      const MetaBulkUploadForm = ({ campaigns }) => {
+        const CTA_OPTIONS = [
+          { value: 'LEARN_MORE', label: '더 알아보기' },
+          { value: 'SHOP_NOW', label: '지금 쇼핑하기' },
+          { value: 'SIGN_UP', label: '가입하기' },
+          { value: 'DOWNLOAD', label: '다운로드' },
+          { value: 'BOOK_TRAVEL', label: '예약하기' },
+          { value: 'CONTACT_US', label: '문의하기' },
+          { value: 'GET_OFFER', label: '혜택 받기' },
+          { value: 'SUBSCRIBE', label: '구독하기' },
+          { value: 'WATCH_MORE', label: '더 보기' },
+          { value: 'NO_BUTTON', label: '버튼 없음' },
+        ];
+        const CONVERSION_EVENTS = [
+          { value: 'PURCHASE',              label: '구매 (Purchase)' },
+          { value: 'INITIATE_CHECKOUT',     label: '결제 시작 (Initiate Checkout)' },
+          { value: 'ADD_TO_CART',           label: '장바구니 추가 (Add to Cart)' },
+          { value: 'ADD_PAYMENT_INFO',      label: '결제 정보 추가 (Add Payment Info)' },
+          { value: 'VIEW_CONTENT',          label: '콘텐츠 조회 (View Content)' },
+          { value: 'SEARCH',                label: '검색 (Search)' },
+          { value: 'LEAD',                  label: '리드 (Lead)' },
+          { value: 'COMPLETE_REGISTRATION', label: '가입 완료 (Complete Registration)' },
+          { value: 'SUBSCRIBE',             label: '구독 (Subscribe)' },
+          { value: 'CONTACT',               label: '문의 (Contact)' },
+        ];
+
+        const [cfg, setCfg] = useState({
+          campaignId: '', adSetId: '', pageId: '', instagramAccountId: '',
+          conversionEvent: '', message: '', headline: '', description: '',
+          link: '', callToAction: 'LEARN_MORE', adStatus: 'PAUSED',
+        });
+        const setC = (k, v) => setCfg(prev => ({ ...prev, [k]: v }));
+
+        const [adSets, setAdSets] = useState([]);
+        const [adSetsLoading, setAdSetsLoading] = useState(false);
+        const [pages, setPages] = useState([]);
+        const [pagesLoading, setPagesLoading] = useState(false);
+        const [igAccounts, setIgAccounts] = useState([]);
+        const [igLoading, setIgLoading] = useState(false);
+
+        const [queue, setQueue] = useState([]);
+        const [isRunning, setIsRunning] = useState(false);
+        const [summary, setSummary] = useState(null);
+        const [dragOver, setDragOver] = useState(false);
+        const fileInputRef = React.useRef(null);
+
+        useEffect(() => {
+          setPagesLoading(true);
+          apiFetch(`${API}/meta/pages`)
+            .then(r => r.json())
+            .then(data => { setPages(Array.isArray(data) ? data : []); setPagesLoading(false); })
+            .catch(() => setPagesLoading(false));
+          setIgLoading(true);
+          apiFetch(`${API}/meta/instagram-accounts`)
+            .then(r => r.json())
+            .then(data => { setIgAccounts(Array.isArray(data) ? data : []); setIgLoading(false); })
+            .catch(() => setIgLoading(false));
+        }, []);
+
+        useEffect(() => {
+          if (!cfg.campaignId) { setAdSets([]); setC('adSetId', ''); return; }
+          setAdSetsLoading(true);
+          setAdSets([]);
+          setC('adSetId', '');
+          apiFetch(`${API}/meta/campaigns/${cfg.campaignId}/adsets`)
+            .then(r => r.json())
+            .then(data => { setAdSets(Array.isArray(data) ? data : []); setAdSetsLoading(false); })
+            .catch(() => setAdSetsLoading(false));
+        }, [cfg.campaignId]);
+
+        const addFiles = (files) => {
+          const newItems = Array.from(files)
+            .filter(f => f.type.startsWith('image/'))
+            .map(f => ({
+              id: `q_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+              name: f.name.replace(/\.[^/.]+$/, ''),
+              file: f,
+              preview: URL.createObjectURL(f),
+              status: 'pending',
+              adId: null,
+              error: null,
+            }));
+          if (newItems.length > 0) { setQueue(prev => [...prev, ...newItems]); setSummary(null); }
+        };
+
+        const removeItem = (id) => setQueue(prev => prev.filter(i => i.id !== id));
+        const updateItem = (id, updates) => setQueue(prev => prev.map(i => i.id === id ? { ...i, ...updates } : i));
+        const renameItem = (id, name) => updateItem(id, { name });
+
+        const handleDrop = (e) => { e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files); };
+
+        const handleBulkSubmit = async () => {
+          const pending = queue.filter(i => i.status === 'pending');
+          if (!pending.length || !isConfigValid) return;
+          setIsRunning(true);
+          setSummary(null);
+          let success = 0, failed = 0;
+
+          for (const item of pending) {
+            updateItem(item.id, { status: 'uploading', error: null });
+            try {
+              const formData = new FormData();
+              formData.append('image', item.file);
+              const uploadRes = await fetch(`${API}/meta/upload-image`, {
+                method: 'POST',
+                ...(API_TOKEN ? { headers: { Authorization: `Bearer ${API_TOKEN}` } } : {}),
+                body: formData,
+              });
+              const uploadData = await uploadRes.json();
+              if (!uploadRes.ok) throw new Error(uploadData.error || '이미지 업로드 실패');
+
+              const body = {
+                name: item.name,
+                pageId: cfg.pageId, adSetId: cfg.adSetId, campaignId: cfg.campaignId,
+                message: cfg.message, link: cfg.link,
+                callToAction: cfg.callToAction, adStatus: cfg.adStatus,
+                imageHash: uploadData.hash,
+                ...(cfg.instagramAccountId && { instagramAccountId: cfg.instagramAccountId }),
+                ...(cfg.conversionEvent && { conversionEvent: cfg.conversionEvent }),
+                ...(cfg.headline && { headline: cfg.headline }),
+                ...(cfg.description && { description: cfg.description }),
+              };
+              const adRes = await apiFetch(`${API}/meta/creative/direct`, {
+                method: 'POST', body: JSON.stringify(body),
+              });
+              const adData = await adRes.json();
+              if (!adRes.ok) throw new Error(adData.error || '광고 등록 실패');
+
+              updateItem(item.id, { status: 'registered', adId: adData.adId });
+              success++;
+            } catch (e) {
+              updateItem(item.id, { status: 'error', error: e.message });
+              failed++;
+            }
+          }
+          setIsRunning(false);
+          setSummary({ success, failed, total: pending.length });
+        };
+
+        const isConfigValid = cfg.campaignId && cfg.adSetId && cfg.pageId && cfg.message && cfg.link;
+        const pendingCount = queue.filter(i => i.status === 'pending').length;
+        const metaCampaigns = campaigns.filter(c => c.platform === 'meta');
+
+        const statusBadge = (status) => {
+          const map = {
+            pending:    { cls: 'bg-gray-100 text-gray-500',     label: '대기중' },
+            uploading:  { cls: 'bg-blue-100 text-blue-600',     label: '업로드 중' },
+            registered: { cls: 'bg-emerald-100 text-emerald-700', label: '등록 완료' },
+            error:      { cls: 'bg-red-100 text-red-600',       label: '오류' },
+          };
+          const s = map[status] || map.pending;
+          return (
+            <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${s.cls}`}>
+              {status === 'uploading' && <span className="w-2 h-2 border border-blue-500 border-t-transparent rounded-full animate-spin"></span>}
+              {s.label}
+            </span>
+          );
+        };
+
+        return (
+          <div className="max-w-2xl space-y-5">
+            {/* ── 고정 설정 카드 ── */}
+            <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+              <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-violet-500 text-white text-[10px] font-bold flex items-center justify-center">1</span>
+                고정 설정
+                <span className="text-xs font-normal text-ppl-sub">— 아래 모든 소재에 공통 적용됩니다</span>
+              </p>
+
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">캠페인 *</label>
+                {metaCampaigns.length === 0 ? (
+                  <div className="w-full text-sm border border-amber-200 rounded-lg px-3 py-2 bg-amber-50 text-amber-600">Meta 캠페인이 없습니다 — 먼저 캠페인을 생성하세요</div>
+                ) : (
+                  <select value={cfg.campaignId} onChange={e => setC('campaignId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    <option value="">-- 캠페인 선택 ({metaCampaigns.length}개) --</option>
+                    {metaCampaigns.map(c => <option key={c.id} value={c.id}>{c.name} · {c.status || c.effective_status || ''}</option>)}
+                  </select>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">광고 세트 (Ad Set) *</label>
+                {!cfg.campaignId ? (
+                  <div className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-ppl-bg text-ppl-sub">캠페인을 먼저 선택하세요</div>
+                ) : adSetsLoading ? (
+                  <div className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-ppl-bg text-ppl-sub flex items-center gap-2">
+                    <span className="w-3 h-3 border-2 border-ppl-teal border-t-transparent rounded-full animate-spin"></span>불러오는 중...
+                  </div>
+                ) : adSets.length === 0 ? (
+                  <div className="w-full text-sm border border-amber-200 rounded-lg px-3 py-2 bg-amber-50 text-amber-600">이 캠페인에 광고 세트가 없습니다</div>
+                ) : (
+                  <select value={cfg.adSetId} onChange={e => setC('adSetId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    <option value="">-- 광고 세트 선택 --</option>
+                    {adSets.map(a => <option key={a.id} value={a.id}>{a.name} ({a.status})</option>)}
+                  </select>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">Facebook 페이지 *</label>
+                {pagesLoading ? (
+                  <div className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-ppl-bg text-ppl-sub flex items-center gap-2">
+                    <span className="w-3 h-3 border-2 border-ppl-teal border-t-transparent rounded-full animate-spin"></span>불러오는 중...
+                  </div>
+                ) : pages.length === 0 ? (
+                  <input type="text" placeholder="페이지 ID 직접 입력"
+                    value={cfg.pageId} onChange={e => setC('pageId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white font-mono" />
+                ) : (
+                  <select value={cfg.pageId} onChange={e => setC('pageId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    <option value="">-- 페이지 선택 --</option>
+                    {pages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">Instagram 계정 <span className="text-ppl-sub font-normal">(선택)</span></label>
+                {igLoading ? (
+                  <div className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-ppl-bg text-ppl-sub flex items-center gap-2">
+                    <span className="w-3 h-3 border-2 border-ppl-teal border-t-transparent rounded-full animate-spin"></span>불러오는 중...
+                  </div>
+                ) : igAccounts.length === 0 ? (
+                  <input type="text" placeholder="Instagram 계정 ID (선택)"
+                    value={cfg.instagramAccountId} onChange={e => setC('instagramAccountId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white font-mono" />
+                ) : (
+                  <select value={cfg.instagramAccountId} onChange={e => setC('instagramAccountId', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    <option value="">-- 선택 안 함 --</option>
+                    {igAccounts.map(a => <option key={a.id} value={a.id}>@{a.username} — {a.name}</option>)}
+                  </select>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">전환 이벤트 <span className="text-ppl-sub font-normal">(선택)</span></label>
+                <select value={cfg.conversionEvent} onChange={e => setC('conversionEvent', e.target.value)}
+                  className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                  <option value="">-- 선택 안 함 --</option>
+                  {CONVERSION_EVENTS.map(ev => <option key={ev.value} value={ev.value}>{ev.label}</option>)}
+                </select>
+              </div>
+
+              <hr className="border-ppl-border" />
+
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">
+                  주요 텍스트 (Primary Text) *
+                  <span className="ml-1 text-ppl-sub font-normal">— 피드에 표시되는 본문</span>
+                </label>
+                <textarea rows={3} placeholder="예: 지금 봄 시즌 특별 할인! 최대 50% 혜택을 놓치지 마세요."
+                  value={cfg.message} onChange={e => setC('message', e.target.value)}
+                  className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white resize-none" />
+                <p className="text-xs text-ppl-sub mt-1">{cfg.message.length}자</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">헤드라인 <span className="text-ppl-sub font-normal">(선택)</span></label>
+                <input type="text" placeholder="예: 봄 시즌 특별 할인"
+                  value={cfg.headline} onChange={e => setC('headline', e.target.value)}
+                  className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-ppl-text mb-1.5">웹사이트 URL (랜딩 페이지) *</label>
+                <input type="url" placeholder="https://example.com/landing"
+                  value={cfg.link} onChange={e => setC('link', e.target.value)}
+                  className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white" />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">CTA 버튼</label>
+                  <select value={cfg.callToAction} onChange={e => setC('callToAction', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    {CTA_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-ppl-text mb-1.5">광고 상태</label>
+                  <select value={cfg.adStatus} onChange={e => setC('adStatus', e.target.value)}
+                    className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white">
+                    <option value="PAUSED">일시정지 (PAUSED)</option>
+                    <option value="ACTIVE">활성 (ACTIVE)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* ── 이미지 대기열 카드 ── */}
+            <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-violet-500 text-white text-[10px] font-bold flex items-center justify-center">2</span>
+                  이미지 대기열
+                  {queue.length > 0 && (
+                    <span className="text-xs font-normal text-ppl-sub">({queue.length}개 · 대기 {pendingCount}개)</span>
+                  )}
+                </p>
+                {queue.length > 0 && !isRunning && pendingCount > 0 && (
+                  <button onClick={() => setQueue(prev => prev.filter(i => i.status !== 'pending'))}
+                    className="text-xs text-red-400 hover:text-red-600 transition-colors">대기중 전체 삭제</button>
+                )}
+              </div>
+
+              {/* 드롭존 */}
+              <div
+                onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={`flex flex-col items-center justify-center w-full h-32 rounded-2xl border-2 border-dashed cursor-pointer transition-all ${
+                  dragOver ? 'border-violet-400 bg-violet-50' : 'border-ppl-border bg-ppl-bg hover:bg-gray-50 hover:border-violet-300'
+                }`}
+              >
+                <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
+                  onChange={e => { if (e.target.files.length) addFiles(e.target.files); }} />
+                <svg width="28" height="28" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24" className="text-ppl-sub mb-1.5">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <p className="text-sm font-medium text-ppl-text">이미지를 드래그하거나 클릭해서 추가</p>
+                <p className="text-xs text-ppl-sub mt-0.5">여러 파일 동시 선택 가능 · JPG, PNG, GIF</p>
+              </div>
+
+              {/* 대기열 리스트 */}
+              {queue.length > 0 && (
+                <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                  {queue.map(item => (
+                    <div key={item.id} className={`flex items-center gap-3 p-3 rounded-xl border transition-colors ${
+                      item.status === 'registered' ? 'bg-emerald-50 border-emerald-200' :
+                      item.status === 'error'      ? 'bg-red-50 border-red-200' :
+                      item.status === 'uploading'  ? 'bg-blue-50 border-blue-200' :
+                      'bg-ppl-bg border-ppl-border'
+                    }`}>
+                      <img src={item.preview} alt="" className="w-14 h-14 object-cover rounded-lg shrink-0 border border-ppl-border" />
+                      <div className="flex-1 min-w-0">
+                        {item.status === 'pending' ? (
+                          <input type="text" value={item.name} onChange={e => renameItem(item.id, e.target.value)}
+                            className="w-full text-sm border border-ppl-border rounded-lg px-2 py-1 bg-white mb-1.5"
+                            placeholder="광고 이름" />
+                        ) : (
+                          <p className="text-sm font-medium text-ppl-text truncate mb-1.5">{item.name}</p>
+                        )}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {statusBadge(item.status)}
+                          {item.adId && <span className="text-[10px] text-ppl-sub font-mono">Ad: {item.adId}</span>}
+                          {item.error && <span className="text-[10px] text-red-500 truncate max-w-[180px]" title={item.error}>{item.error}</span>}
+                        </div>
+                      </div>
+                      {(item.status === 'pending' || item.status === 'error') && !isRunning && (
+                        <button onClick={() => removeItem(item.id)}
+                          className="text-ppl-sub hover:text-red-500 transition-colors text-xl leading-none shrink-0 px-1">×</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 결과 요약 */}
+            {summary && (
+              <div className={`text-sm rounded-xl px-4 py-3 border ${summary.failed === 0 ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-amber-50 border-amber-100 text-amber-700'}`}>
+                <p className="font-semibold mb-0.5">등록 완료 ({summary.total}개 처리)</p>
+                <p className="text-xs">성공 {summary.success}개{summary.failed > 0 ? ` · 실패 ${summary.failed}개 (오류 항목을 확인하세요)` : ''}</p>
+              </div>
+            )}
+
+            {/* 등록 버튼 */}
+            <button onClick={handleBulkSubmit}
+              disabled={isRunning || !isConfigValid || pendingCount === 0}
+              className="w-full py-3 rounded-xl bg-violet-500 text-white text-sm font-semibold hover:bg-violet-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm">
+              {isRunning ? (
+                <><span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>등록 중...</>
+              ) : (
+                <>
+                  <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                  </svg>
+                  {pendingCount > 0 ? `${pendingCount}개 소재 일괄 등록` : '이미지를 추가하세요'}
+                </>
+              )}
+            </button>
+            {!isConfigValid && queue.length > 0 && (
+              <p className="text-xs text-center text-amber-600">고정 설정의 필수 항목 (캠페인, 광고세트, 페이지, 주요 텍스트, URL)을 먼저 입력하세요.</p>
+            )}
+          </div>
+        );
+      };
+
+      // ─── Meta Creative Settings Panel ───
       const MetaCreativeSettingsPanel = ({ campaigns }) => {
+        const [tab, setTab] = useState('single');
         return (
           <div className="space-y-6">
             <div>
@@ -684,7 +1187,19 @@
               </div>
               <p className="text-sm text-ppl-sub">새 소재 등록</p>
             </div>
-            <MetaDirectUploadForm setMetaTab={() => {}} campaigns={campaigns} />
+            <div className="flex gap-1 bg-ppl-bg rounded-xl p-1 w-fit">
+              {[['single', '단건 등록'], ['bulk', '대량 등록']].map(([id, label]) => (
+                <button key={id} onClick={() => setTab(id)}
+                  className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors ${tab === id ? 'bg-white text-ppl-text shadow-sm' : 'text-ppl-sub hover:text-ppl-text'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {tab === 'single' ? (
+              <MetaDirectUploadForm setMetaTab={() => {}} campaigns={campaigns} />
+            ) : (
+              <MetaBulkUploadForm campaigns={campaigns} />
+            )}
           </div>
         );
       };
@@ -2002,6 +2517,28 @@
         const [addLoading, setAddLoading] = React.useState(false);
         const [addResult, setAddResult] = React.useState(null);
 
+        // ── 소재 라이브러리 상태 ──
+        const [library, setLibrary] = React.useState([]);
+        const [libraryLoading, setLibraryLoading] = React.useState(false);
+        const [libSelected, setLibSelected] = React.useState({}); // { id: fieldType }
+        const [libUploading, setLibUploading] = React.useState(false);
+        const [libDragOver, setLibDragOver] = React.useState(false);
+        const libFileRef = React.useRef(null);
+        const [libSubmitting, setLibSubmitting] = React.useState(false);
+        const [libProgress, setLibProgress] = React.useState({ done: 0, total: 0 });
+        const [editingLibId, setEditingLibId] = React.useState(null);
+        const [editingLibName, setEditingLibName] = React.useState('');
+
+        // ── Meta 성과 소재 상태 ──
+        const [imgSource, setImgSource] = React.useState('upload'); // 'upload' | 'meta' | 'library'
+        const [metaCreatives, setMetaCreatives] = React.useState([]);
+        const [metaLoading, setMetaLoading] = React.useState(false);
+        const [metaDays, setMetaDays] = React.useState(7);
+        const [metaMinSpend, setMetaMinSpend] = React.useState(0);
+        const [selected, setSelected] = React.useState({}); // { ad_id: fieldType }
+        const [proxyLoading, setProxyLoading] = React.useState(false);
+        const [proxyProgress, setProxyProgress] = React.useState({ done: 0, total: 0 });
+
         const FIELD_LIMITS = { MARKETING_IMAGE: 20, SQUARE_MARKETING_IMAGE: 20, PORTRAIT_MARKETING_IMAGE: 20, LOGO: 5 };
         const FIELD_KEY_MAP = { marketing: 'MARKETING_IMAGE', square: 'SQUARE_MARKETING_IMAGE', portrait: 'PORTRAIT_MARKETING_IMAGE', logo: 'LOGO' };
 
@@ -2047,15 +2584,9 @@
             .map(([key, v]) => ({ base64: v.base64, fieldType: FIELD_KEY_MAP[key], name: v.name }));
           if (images.length === 0) return alert('이미지를 하나 이상 업로드해주세요');
 
-          // Client-side limit check
           if (assetCounts) {
-            const violations = images.filter(img => {
-              const current = assetCounts[img.fieldType] || 0;
-              return current >= FIELD_LIMITS[img.fieldType];
-            });
-            if (violations.length > 0) {
-              return alert(`한도 초과: ${violations.map(v => v.fieldType).join(', ')} 타입이 이미 최대 개수입니다.`);
-            }
+            const violations = images.filter(img => (assetCounts[img.fieldType] || 0) >= FIELD_LIMITS[img.fieldType]);
+            if (violations.length > 0) return alert(`한도 초과: ${violations.map(v => v.fieldType).join(', ')} 타입이 이미 최대 개수입니다.`);
           }
 
           setAddLoading(true); setAddResult(null);
@@ -2068,7 +2599,6 @@
             if (data.success) {
               setAddResult({ ok: true, msg: `${images.length}개 이미지가 에셋그룹에 추가되었습니다.` });
               setAddImages({ marketing: null, square: null, portrait: null, logo: null });
-              // Refresh counts
               apiFetch(`${API}/google/asset-groups/${selectedAssetGroupId}/asset-counts`)
                 .then(r => r.json()).then(setAssetCounts).catch(() => {});
             } else {
@@ -2078,6 +2608,181 @@
             setAddResult({ ok: false, msg: e.message });
           } finally { setAddLoading(false); }
         };
+
+        // ── 소재 라이브러리 함수 ──
+        const [metaAdList, setMetaAdList] = React.useState([]);
+        const [mappingLibId, setMappingLibId] = React.useState(null);
+
+        const loadLibrary = () => {
+          setLibraryLoading(true);
+          apiFetch(`${API}/creative-library`)
+            .then(r => r.json())
+            .then(data => { setLibrary(Array.isArray(data) ? data : []); setLibraryLoading(false); })
+            .catch(() => setLibraryLoading(false));
+        };
+
+        const loadMetaAdList = () => {
+          apiFetch(`${API}/meta/ad-list`)
+            .then(r => r.json())
+            .then(data => setMetaAdList(Array.isArray(data) ? data : []))
+            .catch(() => {});
+        };
+
+        React.useEffect(() => { loadLibrary(); loadMetaAdList(); }, []);
+
+        const saveAdMapping = async (libId, adId) => {
+          await apiFetch(`${API}/creative-library/${libId}/ad-mapping`, {
+            method: 'PATCH', body: JSON.stringify({ ad_id: adId || null }),
+          });
+          setLibrary(prev => prev.map(i => i.id === libId ? { ...i, ad_id: adId || null } : i));
+          setMappingLibId(null);
+        };
+
+        const uploadToLibrary = async (files) => {
+          if (!files?.length) return;
+          setLibUploading(true);
+          const formData = new FormData();
+          Array.from(files).forEach(f => formData.append('images', f));
+          try {
+            const res = await fetch(`${API}/creative-library/upload`, {
+              method: 'POST',
+              ...(API_TOKEN ? { headers: { Authorization: `Bearer ${API_TOKEN}` } } : {}),
+              body: formData,
+            });
+            const data = await res.json();
+            if (data.success) loadLibrary();
+          } catch (e) { console.warn('Library upload failed', e); }
+          finally { setLibUploading(false); }
+        };
+
+        const deleteFromLibrary = async (id) => {
+          if (!confirm('이 소재를 라이브러리에서 삭제할까요?')) return;
+          await apiFetch(`${API}/creative-library/${id}`, { method: 'DELETE' });
+          setLibrary(prev => prev.filter(i => i.id !== id));
+          setLibSelected(prev => { const n = { ...prev }; delete n[id]; return n; });
+        };
+
+        const saveLibraryName = async (id) => {
+          if (!editingLibName.trim()) return;
+          await apiFetch(`${API}/creative-library/${id}`, {
+            method: 'PATCH', body: JSON.stringify({ name: editingLibName }),
+          });
+          setLibrary(prev => prev.map(i => i.id === id ? { ...i, name: editingLibName } : i));
+          setEditingLibId(null);
+        };
+
+        const toggleLibSelect = (id) => {
+          setLibSelected(prev => {
+            if (prev[id]) { const n = { ...prev }; delete n[id]; return n; }
+            return { ...prev, [id]: 'SQUARE_MARKETING_IMAGE' };
+          });
+        };
+
+        const handleLibSubmit = async () => {
+          const entries = Object.entries(libSelected);
+          if (!entries.length || !selectedAssetGroupId) return;
+          setLibSubmitting(true); setAddResult(null);
+          setLibProgress({ done: 0, total: entries.length });
+
+          const images = [];
+          for (let i = 0; i < entries.length; i++) {
+            const [id, fieldType] = entries[i];
+            try {
+              const res = await apiFetch(`${API}/creative-library/image/${id}?fieldType=${fieldType}`);
+              const data = await res.json();
+              const item = library.find(l => l.id === id);
+              if (data.base64) images.push({ base64: data.base64, fieldType, name: item?.name || id });
+            } catch (e) { console.warn('Library image fetch failed', id, e); }
+            setLibProgress({ done: i + 1, total: entries.length });
+          }
+
+          if (!images.length) {
+            setAddResult({ ok: false, msg: '이미지를 가져오는 데 실패했습니다.' });
+            setLibSubmitting(false); return;
+          }
+          try {
+            const res = await apiFetch(`${API}/google/asset-groups/${selectedAssetGroupId}/assets`, {
+              method: 'POST', body: JSON.stringify({ images }),
+            });
+            const data = await res.json();
+            if (data.success) {
+              setAddResult({ ok: true, msg: `소재 라이브러리에서 ${images.length}개가 PMAX 에셋그룹에 추가됐습니다.` });
+              setLibSelected({});
+              apiFetch(`${API}/google/asset-groups/${selectedAssetGroupId}/asset-counts`)
+                .then(r => r.json()).then(setAssetCounts).catch(() => {});
+            } else {
+              setAddResult({ ok: false, msg: data.error || '업로드 실패' });
+            }
+          } catch (e) {
+            setAddResult({ ok: false, msg: e.message });
+          } finally { setLibSubmitting(false); }
+        };
+
+        const libSelectedCount = Object.keys(libSelected).length;
+
+        // ── Meta 성과 소재 로드 ──
+        const loadMetaCreatives = () => {
+          setMetaLoading(true); setMetaCreatives([]); setSelected({});
+          apiFetch(`${API}/meta/top-creatives?days=${metaDays}&minSpend=${metaMinSpend}&limit=20`)
+            .then(r => r.json())
+            .then(data => { setMetaCreatives(Array.isArray(data) ? data : []); setMetaLoading(false); })
+            .catch(() => setMetaLoading(false));
+        };
+
+        const toggleSelect = (adId) => {
+          setSelected(prev => {
+            if (prev[adId]) { const n = { ...prev }; delete n[adId]; return n; }
+            return { ...prev, [adId]: 'SQUARE_MARKETING_IMAGE' };
+          });
+        };
+
+        // ── Meta 소재 → PMAX 등록 ──
+        const handleMetaSubmit = async () => {
+          const entries = Object.entries(selected);
+          if (!entries.length || !selectedAssetGroupId) return;
+          setProxyLoading(true); setAddResult(null);
+          setProxyProgress({ done: 0, total: entries.length });
+
+          const images = [];
+          for (let i = 0; i < entries.length; i++) {
+            const [adId, fieldType] = entries[i];
+            const creative = metaCreatives.find(c => c.ad_id === adId);
+            if (!creative?.image_url) continue;
+            try {
+              const res = await apiFetch(`${API}/meta/creative-image/${adId}?fieldType=${fieldType}`);
+              const data = await res.json();
+              if (data.base64) images.push({ base64: data.base64, fieldType, name: creative.ad_name || adId });
+            } catch (e) {
+              console.warn('creative-image failed for', adId, e);
+            }
+            setProxyProgress({ done: i + 1, total: entries.length });
+          }
+
+          if (images.length === 0) {
+            setAddResult({ ok: false, msg: '이미지를 가져오는 데 실패했습니다. Meta 이미지 URL이 만료되었을 수 있습니다.' });
+            setProxyLoading(false); return;
+          }
+
+          try {
+            const res = await apiFetch(`${API}/google/asset-groups/${selectedAssetGroupId}/assets`, {
+              method: 'POST', body: JSON.stringify({ images }),
+            });
+            const data = await res.json();
+            if (data.success) {
+              setAddResult({ ok: true, msg: `Meta 성과 소재 ${images.length}개가 PMAX 에셋그룹에 추가되었습니다.` });
+              setSelected({});
+              apiFetch(`${API}/google/asset-groups/${selectedAssetGroupId}/asset-counts`)
+                .then(r => r.json()).then(setAssetCounts).catch(() => {});
+            } else {
+              setAddResult({ ok: false, msg: data.error || '업로드 실패' });
+            }
+          } catch (e) {
+            setAddResult({ ok: false, msg: e.message });
+          } finally { setProxyLoading(false); }
+        };
+
+        const krw = v => `₩${Math.round(v).toLocaleString()}`;
+        const selectedCount = Object.keys(selected).length;
 
         return (
           <div className="space-y-4">
@@ -2112,13 +2817,15 @@
               </div>
             )}
 
-            {/* 이미지 업로드 */}
+            {/* 이미지 소스 선택 + 업로드 */}
             {selectedAssetGroupId && (
               <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-6 space-y-4">
                 <p className="text-sm font-semibold text-ppl-text flex items-center gap-2">
                   <span className="w-5 h-5 rounded-full bg-purple-500 text-white text-[10px] font-bold flex items-center justify-center">3</span>
-                  이미지 추가 (하나 이상 필수)
+                  이미지 추가
                 </p>
+
+                {/* 에셋 현황 */}
                 {assetCountsLoading && <p className="text-xs text-ppl-sub">현재 에셋 수 조회 중...</p>}
                 {assetCounts && (
                   <div className="grid grid-cols-4 gap-2 text-[11px] text-center">
@@ -2139,35 +2846,331 @@
                     })}
                   </div>
                 )}
-                <div className="grid grid-cols-2 gap-4">
-                  {[
-                    { key: 'marketing', label: '마케팅 이미지', size: '1200×628' },
-                    { key: 'square', label: '정사각형 이미지', size: '1200×1200' },
-                    { key: 'portrait', label: '세로형 이미지', size: '960×1200' },
-                    { key: 'logo', label: '로고', size: '1200×1200' },
-                  ].map(({ key, label, size }) => {
-                    const full = isFieldFull(key);
-                    return (
-                    <label key={key} className={`flex flex-col items-center justify-center border-2 border-dashed rounded-xl p-5 transition-colors ${full ? 'border-red-200 bg-red-50 opacity-60 cursor-not-allowed' : addImages[key] ? 'border-purple-400 bg-purple-50 cursor-pointer' : 'border-ppl-border hover:border-purple-300 hover:bg-purple-50/30 cursor-pointer'}`}>
-                      <input type="file" accept="image/*" className="hidden" disabled={full} onChange={e => handleFile(key, e.target.files[0])} />
-                      {full
-                        ? <><span className="text-lg mb-1">🚫</span><p className="text-xs font-medium text-red-500 text-center">{label}</p><p className="text-[10px] text-red-400 mt-0.5">한도 초과</p></>
-                        : addImages[key]
-                          ? <><span className="text-lg mb-1">✅</span><p className="text-xs font-medium text-purple-600 text-center truncate max-w-full">{addImages[key].name}</p></>
-                          : <><span className="text-2xl mb-1.5">🖼️</span><p className="text-xs font-medium text-ppl-text">{label}</p><p className="text-[10px] text-ppl-sub mt-0.5">{size}</p></>
-                      }
-                    </label>
-                  )})}
+
+                {/* 소스 탭 */}
+                <div className="flex gap-1 bg-ppl-bg rounded-xl p-1 w-fit">
+                  {[['upload', '직접 업로드'], ['library', '소재 라이브러리'], ['meta', 'Meta 성과 소재']].map(([id, label]) => (
+                    <button key={id} onClick={() => { setImgSource(id); setAddResult(null); }}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${imgSource === id ? 'bg-white text-ppl-text shadow-sm' : 'text-ppl-sub hover:text-ppl-text'}`}>
+                      {id === 'library' && <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 mr-1.5 mb-0.5"></span>}
+                      {id === 'meta' && <span className="inline-block w-2 h-2 rounded-full bg-blue-400 mr-1.5 mb-0.5"></span>}
+                      {label}
+                    </button>
+                  ))}
                 </div>
-                {addResult && (
-                  <div className={`rounded-xl px-4 py-3 text-sm font-medium ${addResult.ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-600 border border-red-100'}`}>
-                    {addResult.msg}
+
+                {/* ── 직접 업로드 ── */}
+                {imgSource === 'upload' && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      {[
+                        { key: 'marketing', label: '마케팅 이미지', size: '1200×628' },
+                        { key: 'square', label: '정사각형 이미지', size: '1200×1200' },
+                        { key: 'portrait', label: '세로형 이미지', size: '960×1200' },
+                        { key: 'logo', label: '로고', size: '1200×1200' },
+                      ].map(({ key, label, size }) => {
+                        const full = isFieldFull(key);
+                        return (
+                          <label key={key} className={`flex flex-col items-center justify-center border-2 border-dashed rounded-xl p-5 transition-colors ${full ? 'border-red-200 bg-red-50 opacity-60 cursor-not-allowed' : addImages[key] ? 'border-purple-400 bg-purple-50 cursor-pointer' : 'border-ppl-border hover:border-purple-300 hover:bg-purple-50/30 cursor-pointer'}`}>
+                            <input type="file" accept="image/*" className="hidden" disabled={full} onChange={e => handleFile(key, e.target.files[0])} />
+                            {full
+                              ? <><span className="text-lg mb-1">🚫</span><p className="text-xs font-medium text-red-500 text-center">{label}</p><p className="text-[10px] text-red-400 mt-0.5">한도 초과</p></>
+                              : addImages[key]
+                                ? <><span className="text-lg mb-1">✅</span><p className="text-xs font-medium text-purple-600 text-center truncate max-w-full">{addImages[key].name}</p></>
+                                : <><span className="text-2xl mb-1.5">🖼️</span><p className="text-xs font-medium text-ppl-text">{label}</p><p className="text-[10px] text-ppl-sub mt-0.5">{size}</p></>
+                            }
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {addResult && (
+                      <div className={`rounded-xl px-4 py-3 text-sm font-medium ${addResult.ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-600 border border-red-100'}`}>
+                        {addResult.msg}
+                      </div>
+                    )}
+                    <button onClick={handleSubmit} disabled={addLoading}
+                      className="w-full py-3 rounded-xl bg-purple-500 text-white text-sm font-semibold hover:bg-purple-600 disabled:opacity-50 transition-colors shadow-sm">
+                      {addLoading ? '업로드 중...' : '에셋그룹에 이미지 추가'}
+                    </button>
                   </div>
                 )}
-                <button onClick={handleSubmit} disabled={addLoading}
-                  className="w-full py-3 rounded-xl bg-purple-500 text-white text-sm font-semibold hover:bg-purple-600 disabled:opacity-50 transition-colors shadow-sm">
-                  {addLoading ? '업로드 중...' : '에셋그룹에 이미지 추가'}
-                </button>
+
+                {/* ── 소재 라이브러리 ── */}
+                {imgSource === 'library' && (
+                  <div className="space-y-4">
+                    {/* 업로드 드롭존 */}
+                    <div
+                      onDragOver={e => { e.preventDefault(); setLibDragOver(true); }}
+                      onDragLeave={() => setLibDragOver(false)}
+                      onDrop={e => { e.preventDefault(); setLibDragOver(false); uploadToLibrary(e.dataTransfer.files); }}
+                      onClick={() => libFileRef.current?.click()}
+                      className={`flex flex-col items-center justify-center h-24 rounded-2xl border-2 border-dashed cursor-pointer transition-all ${libDragOver ? 'border-emerald-400 bg-emerald-50' : 'border-ppl-border bg-ppl-bg hover:border-emerald-300 hover:bg-emerald-50/30'}`}
+                    >
+                      <input ref={libFileRef} type="file" accept="image/*" multiple className="hidden"
+                        onChange={e => { if (e.target.files.length) uploadToLibrary(e.target.files); }} />
+                      {libUploading
+                        ? <div className="flex items-center gap-2 text-ppl-sub"><span className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></span><span className="text-sm">업로드 중...</span></div>
+                        : <><svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24" className="text-ppl-sub mb-1"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg><p className="text-sm font-medium text-ppl-text">라이브러리에 이미지 추가</p><p className="text-xs text-ppl-sub">여러 파일 동시 선택 가능</p></>
+                      }
+                    </div>
+
+                    {/* 라이브러리 그리드 */}
+                    {libraryLoading && <div className="flex items-center justify-center h-24 text-ppl-sub gap-2"><span className="w-4 h-4 border-2 border-ppl-teal border-t-transparent rounded-full animate-spin"></span><span className="text-sm">불러오는 중...</span></div>}
+                    {!libraryLoading && library.length === 0 && (
+                      <div className="text-center py-8 text-ppl-sub text-sm">라이브러리가 비어있습니다. 위에서 이미지를 추가하세요.</div>
+                    )}
+                    {library.length > 0 && (
+                      <>
+                        <p className="text-xs text-ppl-sub">{library.length}개 · 클릭해서 선택 · 선택 후 이미지 타입 지정</p>
+                        <div className="grid grid-cols-3 gap-3 max-h-[480px] overflow-y-auto pr-1">
+                          {library.map(item => {
+                            const isSelected = !!libSelected[item.id];
+                            return (
+                              <div key={item.id} className={`relative rounded-xl border-2 overflow-hidden transition-all ${isSelected ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-ppl-border hover:border-emerald-300'}`}>
+                                {/* 이미지 */}
+                                <div className="aspect-video bg-ppl-bg cursor-pointer" onClick={() => toggleLibSelect(item.id)}>
+                                  <img src={`${THUMB}/library/${item.id}`} alt={item.name}
+                                    className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; }} />
+                                  {/* 크기 배지 */}
+                                  {item.width && <span className="absolute top-1.5 left-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-black/50 text-white">{item.width}×{item.height}</span>}
+                                  {/* 선택 체크 */}
+                                  {isSelected && (
+                                    <span className="absolute top-1.5 right-1.5 w-5 h-5 bg-emerald-500 rounded-full flex items-center justify-center">
+                                      <svg width="10" height="10" fill="none" stroke="white" strokeWidth="2.5" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                                    </span>
+                                  )}
+                                </div>
+                                {/* 이름 + 액션 */}
+                                <div className="p-2">
+                                  {editingLibId === item.id ? (
+                                    <div className="flex gap-1">
+                                      <input type="text" value={editingLibName} onChange={e => setEditingLibName(e.target.value)}
+                                        onKeyDown={e => { if (e.key === 'Enter') saveLibraryName(item.id); if (e.key === 'Escape') setEditingLibId(null); }}
+                                        autoFocus className="flex-1 text-xs border border-ppl-border rounded px-1.5 py-1 bg-white" />
+                                      <button onClick={() => saveLibraryName(item.id)} className="text-xs text-emerald-600 font-semibold px-1">저장</button>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center gap-1">
+                                      <p className="flex-1 text-[11px] font-medium text-ppl-text truncate cursor-pointer"
+                                        onClick={() => toggleLibSelect(item.id)}>{item.name}</p>
+                                      <button onClick={() => { setEditingLibId(item.id); setEditingLibName(item.name); }}
+                                        className="text-ppl-sub hover:text-ppl-text shrink-0" title="이름 수정">
+                                        <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                                      </button>
+                                      <button onClick={() => deleteFromLibrary(item.id)}
+                                        className="text-ppl-sub hover:text-red-500 shrink-0" title="삭제">
+                                        <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                                      </button>
+                                    </div>
+                                  )}
+                                  {/* Meta 광고 매핑 */}
+                                  {mappingLibId === item.id ? (
+                                    <div className="mt-1.5">
+                                      <select defaultValue={item.ad_id || ''}
+                                        onChange={e => saveAdMapping(item.id, e.target.value)}
+                                        className="w-full text-[11px] border border-blue-300 rounded-md px-1.5 py-1 bg-white">
+                                        <option value="">-- 연결 해제 --</option>
+                                        {metaAdList.map(ad => (
+                                          <option key={ad.ad_id} value={ad.ad_id}>
+                                            {ad.ad_name || ad.ad_id} ({ad.campaign_name})
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <button onClick={() => setMappingLibId(null)} className="text-[10px] text-ppl-sub mt-0.5">취소</button>
+                                    </div>
+                                  ) : (
+                                    <div className="mt-1 flex items-center gap-1">
+                                      {item.ad_id ? (
+                                        <span className="text-[10px] px-1.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-200 rounded-md truncate flex-1">
+                                          {metaAdList.find(a => a.ad_id === item.ad_id)?.ad_name || item.ad_id}
+                                        </span>
+                                      ) : (
+                                        <span className="text-[10px] text-ppl-sub flex-1">Meta 광고 미연결</span>
+                                      )}
+                                      <button onClick={() => setMappingLibId(item.id)}
+                                        className="text-[10px] text-blue-500 hover:text-blue-700 shrink-0 font-medium">연결</button>
+                                    </div>
+                                  )}
+                                  {/* 선택 시 타입 드롭다운 */}
+                                  {isSelected && (
+                                    <select value={libSelected[item.id]}
+                                      onChange={e => setLibSelected(prev => ({ ...prev, [item.id]: e.target.value }))}
+                                      className="mt-1.5 w-full text-[11px] border border-emerald-300 rounded-md px-1.5 py-1 bg-white">
+                                      <option value="SQUARE_MARKETING_IMAGE">정사각형 (1200×1200)</option>
+                                      <option value="MARKETING_IMAGE">마케팅 (1200×628)</option>
+                                      <option value="PORTRAIT_MARKETING_IMAGE">세로형 (960×1200)</option>
+                                      <option value="LOGO">로고 (1200×1200)</option>
+                                    </select>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+
+                    {/* 진행 상태 */}
+                    {libSubmitting && (
+                      <div className="bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></span>
+                          <span className="text-sm font-medium text-emerald-700">PMAX에 업로드 중...</span>
+                        </div>
+                        <div className="w-full bg-emerald-100 rounded-full h-1.5">
+                          <div className="bg-emerald-500 h-1.5 rounded-full transition-all"
+                            style={{ width: `${libProgress.total > 0 ? (libProgress.done / libProgress.total) * 100 : 0}%` }}></div>
+                        </div>
+                        <p className="text-xs text-emerald-600 mt-1">{libProgress.done} / {libProgress.total}</p>
+                      </div>
+                    )}
+
+                    {addResult && imgSource === 'library' && (
+                      <div className={`rounded-xl px-4 py-3 text-sm font-medium ${addResult.ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-600 border border-red-100'}`}>
+                        {addResult.msg}
+                      </div>
+                    )}
+
+                    <button onClick={handleLibSubmit}
+                      disabled={libSubmitting || libSelectedCount === 0 || !selectedAssetGroupId}
+                      className="w-full py-3 rounded-xl bg-emerald-500 text-white text-sm font-semibold hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm">
+                      {libSubmitting ? 'PMAX에 추가 중...' : `선택한 소재 ${libSelectedCount}개 PMAX에 추가`}
+                    </button>
+                  </div>
+                )}
+
+                {/* ── Meta 성과 소재 ── */}
+                {imgSource === 'meta' && (
+                  <div className="space-y-4">
+                    {/* 필터 행 */}
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-ppl-sub">기간</span>
+                        {[7, 14, 30].map(d => (
+                          <button key={d} onClick={() => setMetaDays(d)}
+                            className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${metaDays === d ? 'bg-blue-500 text-white' : 'bg-ppl-bg text-ppl-sub hover:text-ppl-text'}`}>
+                            {d}일
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-ppl-sub">최소 소진</span>
+                        <select value={metaMinSpend} onChange={e => setMetaMinSpend(Number(e.target.value))}
+                          className="text-xs border border-ppl-border rounded-lg px-2 py-1 bg-white">
+                          <option value={0}>전체</option>
+                          <option value={10000}>₩10,000+</option>
+                          <option value={50000}>₩50,000+</option>
+                          <option value={100000}>₩100,000+</option>
+                        </select>
+                      </div>
+                      <button onClick={loadMetaCreatives} disabled={metaLoading}
+                        className="ml-auto px-4 py-1.5 rounded-lg bg-blue-500 text-white text-xs font-semibold hover:bg-blue-600 disabled:opacity-50 transition-colors">
+                        {metaLoading ? '조회 중...' : '조회'}
+                      </button>
+                    </div>
+
+                    {/* 소재 그리드 */}
+                    {metaLoading && (
+                      <div className="flex items-center justify-center h-32 text-ppl-sub gap-2">
+                        <span className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></span>
+                        <span className="text-sm">Meta 성과 데이터 조회 중...</span>
+                      </div>
+                    )}
+                    {!metaLoading && metaCreatives.length === 0 && (
+                      <div className="text-center py-10 text-ppl-sub text-sm">
+                        <p>조회 버튼을 눌러 Meta 성과 소재를 불러오세요.</p>
+                        <p className="text-xs mt-1">성과 데이터가 없으면 서버 수집 후 다시 시도하세요.</p>
+                      </div>
+                    )}
+                    {metaCreatives.length > 0 && (
+                      <>
+                        <p className="text-xs text-ppl-sub">ROAS 기준 상위 {metaCreatives.length}개 · 클릭해서 선택 · 선택 후 이미지 타입 지정</p>
+                        <div className="grid grid-cols-3 gap-3 max-h-[480px] overflow-y-auto pr-1">
+                          {metaCreatives.map(c => {
+                            const isSelected = !!selected[c.ad_id];
+                            return (
+                              <div key={c.ad_id}
+                                onClick={() => toggleSelect(c.ad_id)}
+                                className={`relative rounded-xl border-2 cursor-pointer transition-all overflow-hidden ${isSelected ? 'border-blue-500 ring-2 ring-blue-200' : 'border-ppl-border hover:border-blue-300'}`}
+                              >
+                                {/* 이미지 — 라이브러리 BLOB 우선, 없으면 로컬 캐시 */}
+                                <div className="aspect-square bg-ppl-bg relative">
+                                  {c.library_thumb ? (
+                                    <img src={c.library_thumb} alt={c.ad_name} className="w-full h-full object-cover" />
+                                  ) : (
+                                    <img
+                                      src={`${THUMB}/meta/${c.ad_id}`}
+                                      alt={c.ad_name}
+                                      className="w-full h-full object-cover"
+                                      onError={e => { e.target.style.display = 'none'; }}
+                                    />
+                                  )}
+                                  {/* ROAS 배지 */}
+                                  <span className={`absolute top-1.5 left-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded-md ${c.roas >= 3 ? 'bg-emerald-500 text-white' : c.roas >= 1.5 ? 'bg-amber-400 text-white' : 'bg-gray-400 text-white'}`}>
+                                    ROAS {c.roas.toFixed(1)}
+                                  </span>
+                                  {/* 선택 체크 */}
+                                  {isSelected && (
+                                    <span className="absolute top-1.5 right-1.5 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center">
+                                      <svg width="10" height="10" fill="none" stroke="white" strokeWidth="2.5" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                                    </span>
+                                  )}
+                                </div>
+                                {/* 정보 */}
+                                <div className="p-2">
+                                  <p className="text-[11px] font-medium text-ppl-text truncate" title={c.ad_name}>{c.ad_name || c.ad_id}</p>
+                                  <p className="text-[10px] text-ppl-sub mt-0.5">{krw(c.spend)} 소진 · CTR {c.ctr?.toFixed(2)}%</p>
+                                  {/* 선택 시 타입 드롭다운 */}
+                                  {isSelected && (
+                                    <select
+                                      value={selected[c.ad_id]}
+                                      onChange={e => { e.stopPropagation(); setSelected(prev => ({ ...prev, [c.ad_id]: e.target.value })); }}
+                                      onClick={e => e.stopPropagation()}
+                                      className="mt-1.5 w-full text-[11px] border border-blue-300 rounded-md px-1.5 py-1 bg-white">
+                                      <option value="SQUARE_MARKETING_IMAGE">정사각형 (1200×1200)</option>
+                                      <option value="MARKETING_IMAGE">마케팅 (1200×628)</option>
+                                      <option value="PORTRAIT_MARKETING_IMAGE">세로형 (960×1200)</option>
+                                    </select>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+
+                    {/* 진행 상태 */}
+                    {proxyLoading && (
+                      <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></span>
+                          <span className="text-sm font-medium text-blue-700">이미지 다운로드 및 업로드 중...</span>
+                        </div>
+                        <div className="w-full bg-blue-100 rounded-full h-1.5">
+                          <div className="bg-blue-500 h-1.5 rounded-full transition-all"
+                            style={{ width: `${proxyProgress.total > 0 ? (proxyProgress.done / proxyProgress.total) * 100 : 0}%` }}></div>
+                        </div>
+                        <p className="text-xs text-blue-600 mt-1">{proxyProgress.done} / {proxyProgress.total}</p>
+                      </div>
+                    )}
+
+                    {addResult && (
+                      <div className={`rounded-xl px-4 py-3 text-sm font-medium ${addResult.ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-600 border border-red-100'}`}>
+                        {addResult.msg}
+                      </div>
+                    )}
+
+                    <button onClick={handleMetaSubmit}
+                      disabled={proxyLoading || selectedCount === 0 || !selectedAssetGroupId}
+                      className="w-full py-3 rounded-xl bg-blue-500 text-white text-sm font-semibold hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm flex items-center justify-center gap-2">
+                      {proxyLoading
+                        ? <><span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>PMAX에 추가 중...</>
+                        : `선택한 소재 ${selectedCount}개 PMAX에 추가`
+                      }
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -2444,6 +3447,7 @@
               { icon: Icons.zap, label: 'Automation', view: 'automation' },
               { icon: Icons.layers, label: 'Creatives', view: 'creatives' },
               { icon: Icons.upload, label: 'Creative Upload', view: 'meta-creative' },
+              { icon: Icons.image, label: '소재 라이브러리', view: 'library' },
             ].map((item, i) => (
               <button key={i} onClick={() => setActiveView(item.view)}
                 className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${activeView === item.view ? 'bg-ppl-teal text-white' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
@@ -3244,15 +4248,11 @@
                     <div key={`${row.ad_id}-${row.platform}-${idx}`}
                       className="bg-white rounded-xl border border-ppl-border overflow-hidden hover:shadow-md hover:border-ppl-teal/40 transition-all group cursor-pointer">
                       {/* Thumbnail */}
-                      {row.image_url ? (
+                      {row.library_thumb ? (
                         <div className="aspect-square relative overflow-hidden bg-gray-100">
-                          <img src={row.image_url} alt={row.ad_name || row.ad_id}
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              e.target.style.display = 'none';
-                              e.target.parentElement.classList.add('bg-gradient-to-br', ...getThumbColor(row.ad_id).split(' '));
-                              e.target.parentElement.innerHTML = `<div class="flex items-center justify-center h-full"><div class="text-white/80 text-center px-4"><p class="text-sm font-semibold leading-tight line-clamp-3 drop-shadow">${(row.ad_name || row.ad_id).replace(/</g, '&lt;')}</p></div></div>`;
-                            }} />
+                          <img src={row.library_thumb} alt={row.ad_name || row.ad_id}
+                            className="w-full h-full object-cover" />
+                          <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-500/80 text-white">라이브러리</span>
                           <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
                         </div>
                       ) : isPmax ? (
@@ -3330,6 +4330,232 @@
 
       // ─── Overview Panel ──────────────────────────────
       // ─── Automation Panel ─────────────────────────────────────
+      // ─── 소재 라이브러리 페이지 ────────────────────────────────────
+      const CreativeLibraryPage = () => {
+        const [library, setLibrary] = React.useState([]);
+        const [loading, setLoading] = React.useState(false);
+        const [uploading, setUploading] = React.useState(false);
+        const [dragOver, setDragOver] = React.useState(false);
+        const fileRef = React.useRef(null);
+        const [editingId, setEditingId] = React.useState(null);
+        const [editingName, setEditingName] = React.useState('');
+        const [mappingId, setMappingId] = React.useState(null);
+        const [metaAdList, setMetaAdList] = React.useState([]);
+        const [uploadResult, setUploadResult] = React.useState(null);
+
+        const loadLibrary = () => {
+          setLoading(true);
+          apiFetch(`${API}/creative-library`)
+            .then(r => r.json())
+            .then(data => { setLibrary(Array.isArray(data) ? data : []); setLoading(false); })
+            .catch(() => setLoading(false));
+        };
+
+        const loadMetaAdList = () => {
+          apiFetch(`${API}/meta/ad-list`)
+            .then(r => r.json())
+            .then(data => setMetaAdList(Array.isArray(data) ? data : []))
+            .catch(() => {});
+        };
+
+        React.useEffect(() => { loadLibrary(); loadMetaAdList(); }, []);
+
+        const uploadFiles = async (files) => {
+          if (!files?.length) return;
+          setUploading(true); setUploadResult(null);
+          const formData = new FormData();
+          Array.from(files).forEach(f => formData.append('images', f));
+          try {
+            const res = await fetch(`${API}/creative-library/upload`, {
+              method: 'POST',
+              ...(API_TOKEN ? { headers: { Authorization: `Bearer ${API_TOKEN}` } } : {}),
+              body: formData,
+            });
+            const data = await res.json();
+            if (data.success) {
+              setUploadResult({ ok: true, msg: `${data.uploaded}개 이미지가 라이브러리에 저장됐습니다.` });
+              loadLibrary();
+            }
+          } catch (e) {
+            setUploadResult({ ok: false, msg: '업로드 중 오류가 발생했습니다.' });
+          } finally { setUploading(false); }
+        };
+
+        const deletItem = async (id) => {
+          if (!confirm('이 소재를 라이브러리에서 삭제할까요?')) return;
+          await apiFetch(`${API}/creative-library/${id}`, { method: 'DELETE' });
+          setLibrary(prev => prev.filter(i => i.id !== id));
+        };
+
+        const saveName = async (id) => {
+          if (!editingName.trim()) return;
+          await apiFetch(`${API}/creative-library/${id}`, {
+            method: 'PATCH', body: JSON.stringify({ name: editingName }),
+          });
+          setLibrary(prev => prev.map(i => i.id === id ? { ...i, name: editingName } : i));
+          setEditingId(null);
+        };
+
+        const saveMapping = async (libId, adId) => {
+          await apiFetch(`${API}/creative-library/${libId}/ad-mapping`, {
+            method: 'PATCH', body: JSON.stringify({ ad_id: adId || null }),
+          });
+          setLibrary(prev => prev.map(i => i.id === libId ? { ...i, ad_id: adId || null } : i));
+          setMappingId(null);
+        };
+
+        const mappedCount = library.filter(i => i.ad_id).length;
+
+        return (
+          <div className="max-w-5xl mx-auto space-y-6">
+            {/* 헤더 */}
+            <div>
+              <h2 className="text-xl font-bold text-ppl-text">소재 라이브러리</h2>
+              <p className="text-sm text-ppl-sub mt-1">원본 배너 이미지를 SQLite에 직접 저장합니다. Meta 광고와 연결하면 성과 조회 시 이미지가 항상 표시됩니다.</p>
+            </div>
+
+            {/* 업로드 영역 */}
+            <div
+              onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={e => { e.preventDefault(); setDragOver(false); uploadFiles(e.dataTransfer.files); }}
+              onClick={() => fileRef.current?.click()}
+              className={`flex flex-col items-center justify-center h-36 rounded-2xl border-2 border-dashed cursor-pointer transition-all ${dragOver ? 'border-ppl-teal bg-teal-50' : 'border-ppl-border bg-ppl-bg hover:border-ppl-teal hover:bg-teal-50/30'}`}
+            >
+              <input ref={fileRef} type="file" accept="image/*" multiple className="hidden"
+                onChange={e => { if (e.target.files.length) uploadFiles(e.target.files); }} />
+              {uploading
+                ? <div className="flex items-center gap-2 text-ppl-sub"><span className="w-5 h-5 border-2 border-ppl-teal border-t-transparent rounded-full animate-spin"></span><span className="text-sm">저장 중...</span></div>
+                : <>
+                    {Icons.upload}
+                    <p className="text-sm font-semibold text-ppl-text mt-2">이미지 드래그&드롭 또는 클릭해서 선택</p>
+                    <p className="text-xs text-ppl-sub mt-1">JPG, PNG, WebP · 한 번에 여러 파일 선택 가능 · 파일당 최대 30MB</p>
+                  </>
+              }
+            </div>
+
+            {/* 업로드 결과 */}
+            {uploadResult && (
+              <div className={`rounded-xl px-4 py-3 text-sm font-medium ${uploadResult.ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-600 border border-red-100'}`}>
+                {uploadResult.msg}
+              </div>
+            )}
+
+            {/* 통계 요약 */}
+            {library.length > 0 && (
+              <div className="flex items-center gap-4 text-sm text-ppl-sub">
+                <span>총 <strong className="text-ppl-text">{library.length}</strong>개</span>
+                <span>Meta 광고 연결 <strong className="text-ppl-text">{mappedCount}</strong>개</span>
+                <span>미연결 <strong className="text-amber-500">{library.length - mappedCount}</strong>개</span>
+              </div>
+            )}
+
+            {/* 이미지 그리드 */}
+            {loading && (
+              <div className="flex items-center justify-center h-32 text-ppl-sub gap-2">
+                <span className="w-5 h-5 border-2 border-ppl-teal border-t-transparent rounded-full animate-spin"></span>
+                <span className="text-sm">불러오는 중...</span>
+              </div>
+            )}
+            {!loading && library.length === 0 && (
+              <div className="text-center py-16 text-ppl-sub">
+                <div className="text-4xl mb-3">🖼️</div>
+                <p className="text-sm">라이브러리가 비어있습니다.</p>
+                <p className="text-xs mt-1">위에서 원본 배너 이미지를 업로드하세요.</p>
+              </div>
+            )}
+            {library.length > 0 && (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                {library.map(item => {
+                  const linkedAd = metaAdList.find(a => a.ad_id === item.ad_id);
+                  return (
+                    <div key={item.id} className="rounded-2xl border border-ppl-border bg-white overflow-hidden shadow-sm hover:shadow-md transition-shadow">
+                      {/* 썸네일 */}
+                      <div className="aspect-video bg-ppl-bg relative">
+                        <img src={`${THUMB}/library/${item.id}`} alt={item.name}
+                          className="w-full h-full object-cover"
+                          onError={e => { e.target.style.display = 'none'; }} />
+                        {item.width && (
+                          <span className="absolute bottom-1.5 left-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-black/50 text-white">
+                            {item.width}×{item.height}
+                          </span>
+                        )}
+                        {/* 연결 상태 뱃지 */}
+                        <span className={`absolute top-1.5 right-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${item.ad_id ? 'bg-blue-500 text-white' : 'bg-gray-400/70 text-white'}`}>
+                          {item.ad_id ? '연결됨' : '미연결'}
+                        </span>
+                      </div>
+
+                      {/* 이름 */}
+                      <div className="px-3 pt-2.5 pb-1">
+                        {editingId === item.id ? (
+                          <div className="flex gap-1">
+                            <input type="text" value={editingName}
+                              onChange={e => setEditingName(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') saveName(item.id); if (e.key === 'Escape') setEditingId(null); }}
+                              autoFocus className="flex-1 text-xs border border-ppl-border rounded px-1.5 py-1 bg-white" />
+                            <button onClick={() => saveName(item.id)} className="text-xs text-emerald-600 font-semibold px-1">저장</button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1">
+                            <p className="flex-1 text-xs font-semibold text-ppl-text truncate" title={item.name}>{item.name}</p>
+                            <button onClick={() => { setEditingId(item.id); setEditingName(item.name); }}
+                              className="text-ppl-sub hover:text-ppl-text shrink-0" title="이름 수정">
+                              <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                            </button>
+                            <button onClick={() => deletItem(item.id)}
+                              className="text-ppl-sub hover:text-red-500 shrink-0" title="삭제">
+                              <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Meta 광고 연결 */}
+                      <div className="px-3 pb-3">
+                        {mappingId === item.id ? (
+                          <div className="space-y-1">
+                            <select defaultValue={item.ad_id || ''}
+                              onChange={e => saveMapping(item.id, e.target.value)}
+                              className="w-full text-[11px] border border-blue-300 rounded-md px-1.5 py-1.5 bg-white">
+                              <option value="">-- 연결 해제 --</option>
+                              {metaAdList.map(ad => (
+                                <option key={ad.ad_id} value={ad.ad_id}>
+                                  {ad.ad_name || ad.ad_id}
+                                </option>
+                              ))}
+                            </select>
+                            <button onClick={() => setMappingId(null)} className="text-[10px] text-ppl-sub hover:text-ppl-text">취소</button>
+                          </div>
+                        ) : item.ad_id ? (
+                          <div className="flex items-center gap-1.5">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[10px] text-blue-600 font-medium truncate" title={linkedAd?.ad_name || item.ad_id}>
+                                {linkedAd?.ad_name || item.ad_id}
+                              </p>
+                              {linkedAd?.campaign_name && (
+                                <p className="text-[10px] text-ppl-sub truncate">{linkedAd.campaign_name}</p>
+                              )}
+                            </div>
+                            <button onClick={() => setMappingId(item.id)}
+                              className="text-[10px] text-blue-400 hover:text-blue-600 shrink-0 font-medium">변경</button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setMappingId(item.id)}
+                            className="w-full text-[11px] py-1.5 rounded-lg border border-dashed border-blue-300 text-blue-500 hover:bg-blue-50 transition-colors font-medium">
+                            + Meta 광고 연결
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      };
+
       const AutomationPanel = () => {
         const [slackEnabled, setSlackEnabled] = React.useState(false);
         const [thresholds, setThresholds] = React.useState({ roasMin: 1.5, cpaMax: 50000, budgetBurnRate: 0.85 });
@@ -3812,6 +5038,10 @@
               ) : activeView === 'automation' ? (
                 <div className="px-8 py-8">
                   <AutomationPanel />
+                </div>
+              ) : activeView === 'library' ? (
+                <div className="px-8 py-8">
+                  <CreativeLibraryPage />
                 </div>
               ) : null}
             </div>

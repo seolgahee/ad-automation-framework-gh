@@ -96,6 +96,26 @@ function migrateAdPerformance() {
   logger.info('ad_performance migration complete');
 }
 
+/** Migrate creative_library: add image_data BLOB + ad_id columns if missing */
+function migrateCreativeLibraryBlob() {
+  const tableExists = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='creative_library'`
+  ).get();
+  if (!tableExists) return;
+
+  const cols = db.prepare(`PRAGMA table_info(creative_library)`).all().map(c => c.name);
+
+  if (!cols.includes('image_data')) {
+    logger.info('Adding image_data BLOB column to creative_library');
+    db.exec(`ALTER TABLE creative_library ADD COLUMN image_data BLOB`);
+  }
+  if (!cols.includes('ad_id')) {
+    logger.info('Adding ad_id column to creative_library');
+    db.exec(`ALTER TABLE creative_library ADD COLUMN ad_id TEXT`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_creative_library_adid ON creative_library(ad_id)`);
+  }
+}
+
 /** Migrate campaigns: add stop_time column if missing */
 function migrateAddCampaignStopTime() {
   const tableExists = db.prepare(
@@ -116,6 +136,7 @@ export function initDatabase() {
   migrateAdPerformance();
   migrateAddImageUrl();
   migrateAddCampaignStopTime();
+  migrateCreativeLibraryBlob();
 
   db.exec(`
     -- Campaign master data (unified across platforms)
@@ -289,6 +310,22 @@ export function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_asset_grades_campaign ON google_asset_grades(campaign_id);
     CREATE INDEX IF NOT EXISTS idx_asset_grades_label ON google_asset_grades(performance_label);
+
+    -- 소재 라이브러리 (배너 이미지 BLOB 영구 저장)
+    CREATE TABLE IF NOT EXISTS creative_library (
+      id            TEXT PRIMARY KEY,
+      name          TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      width         INTEGER,
+      height        INTEGER,
+      file_size     INTEGER,
+      mime_type     TEXT DEFAULT 'image/jpeg',
+      image_data    BLOB,
+      ad_id         TEXT,
+      created_at    TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_creative_library_created ON creative_library(created_at);
   `);
 
   logger.info('Database initialized', { path: DB_PATH });

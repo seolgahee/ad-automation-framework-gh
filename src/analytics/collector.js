@@ -3,12 +3,16 @@
  * Meta, Google, and TikTok, normalizes it, stores in SQLite, and triggers alerts.
  */
 import { EventEmitter } from 'events';
+import fs from 'fs';
+import path from 'path';
 import cron from 'node-cron';
 import db, { initDatabase } from '../utils/db.js';
 import logger from '../utils/logger.js';
 import notifier from '../utils/notifier.js';
 import { getMetaClient, getGoogleClient, getTikTokClient } from '../utils/clients.js';
 import { krwFmt } from '../utils/format.js';
+
+const CREATIVE_IMAGE_DIR = path.join(process.cwd(), 'data', 'creative-images');
 
 export class DataCollector extends EventEmitter {
   constructor() {
@@ -188,6 +192,39 @@ export class DataCollector extends EventEmitter {
     });
     transaction();
     logger.info(`meta ad-level: synced ${rows.length} ad rows (${imageMap.size} with images)`);
+
+    // 이미지 로컬 캐시 (비동기 백그라운드 — 수집 사이클 블로킹 없음)
+    if (imageMap.size > 0) {
+      this._cacheCreativeImages(imageMap).catch(err =>
+        logger.warn('Creative image caching failed', { error: err.message })
+      );
+    }
+  }
+
+  /**
+   * Meta 소재 이미지를 로컬 파일로 저장
+   * 이미 존재하는 파일은 건너뜀 (CDN URL 만료 대비)
+   */
+  async _cacheCreativeImages(imageMap) {
+    fs.mkdirSync(CREATIVE_IMAGE_DIR, { recursive: true });
+    let saved = 0;
+
+    const downloads = [...imageMap.entries()].map(async ([adId, imgUrl]) => {
+      const localPath = path.join(CREATIVE_IMAGE_DIR, `${adId}.jpg`);
+      if (fs.existsSync(localPath)) return; // 이미 캐시됨
+      try {
+        const res = await fetch(imgUrl, { signal: AbortSignal.timeout(10000) });
+        if (!res.ok) return;
+        const buffer = Buffer.from(await res.arrayBuffer());
+        fs.writeFileSync(localPath, buffer);
+        saved++;
+      } catch (e) {
+        logger.warn(`Image cache failed: ${adId}`, { error: e.message });
+      }
+    });
+
+    await Promise.allSettled(downloads);
+    if (saved > 0) logger.info(`Creative images cached locally: ${saved}개 신규`);
   }
 
   /** Collect Google performance and upsert */

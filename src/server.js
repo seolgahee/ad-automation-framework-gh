@@ -17,10 +17,42 @@ import DataCollector from './analytics/collector.js';
 import { getOptimizer, getPipeline, getTemplateEngine, getABTestEngine, getAudienceManager } from './utils/services.js';
 import { getMetaClient, getGoogleClient } from './utils/clients.js';
 import crypto from 'crypto';
+import path from 'path';
 import { getAdapter } from './utils/platform-adapter.js';
 import { startSlackBot } from './slack-bot.js';
 import multer from 'multer';
 import fs from 'fs';
+import sharp from 'sharp';
+
+const CREATIVE_IMAGE_DIR = path.join(process.cwd(), 'data', 'creative-images');
+
+// Google PMAX 이미지 타입별 요구 사양
+const PMAX_IMAGE_SPECS = {
+  MARKETING_IMAGE:          { width: 1200, height: 628  },
+  SQUARE_MARKETING_IMAGE:   { width: 1200, height: 1200 },
+  PORTRAIT_MARKETING_IMAGE: { width: 960,  height: 1200 },
+  LOGO:                     { width: 1200, height: 1200 },
+};
+
+/**
+ * 이미지 버퍼를 PMAX 요구 사양에 맞게 리사이즈 (cover crop)
+ * @param {Buffer} inputBuffer
+ * @param {string} fieldType - PMAX field type
+ * @returns {Promise<Buffer>}
+ */
+async function resizeForPmax(inputBuffer, fieldType) {
+  const spec = PMAX_IMAGE_SPECS[fieldType];
+  if (!spec) return inputBuffer;
+  const meta = await sharp(inputBuffer).metadata();
+  // 원본이 이미 규격과 일치하면 리사이즈 없이 그대로 반환
+  if (meta.width === spec.width && meta.height === spec.height) {
+    return inputBuffer;
+  }
+  return sharp(inputBuffer)
+    .resize(spec.width, spec.height, { fit: 'cover', position: 'centre' })
+    .jpeg({ quality: 95 })
+    .toBuffer();
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -57,6 +89,25 @@ const PORT = process.env.API_PORT || 3099;
 const API_TOKEN = process.env.API_AUTH_TOKEN || '';
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
+
+// ─── 썸네일 전용 경로 (/api 외부 → 인증 불필요) ─────────────────
+/** GET /thumbnails/library/:id — creative_library BLOB 이미지 서빙 */
+app.get('/thumbnails/library/:id', (req, res) => {
+  const row = db.prepare(`SELECT image_data, mime_type FROM creative_library WHERE id = ?`).get(req.params.id);
+  if (!row?.image_data) return res.status(404).end();
+  res.setHeader('Content-Type', row.mime_type || 'image/jpeg');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.send(Buffer.from(row.image_data));
+});
+
+/** GET /thumbnails/meta/:adId — Meta 로컬 캐시 이미지 서빙 */
+app.get('/thumbnails/meta/:adId', (req, res) => {
+  const filePath = path.join(CREATIVE_IMAGE_DIR, `${req.params.adId}.jpg`);
+  if (!fs.existsSync(filePath)) return res.status(404).end();
+  res.setHeader('Content-Type', 'image/jpeg');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  fs.createReadStream(filePath).pipe(res);
+});
 
 // ─── CRITICAL #2: Authentication Middleware ─────────────────────
 function authMiddleware(req, res, next) {
@@ -632,6 +683,284 @@ app.post('/api/meta/creative/direct', async (req, res) => {
   }
 });
 
+// ─── Creative Library (BLOB 저장) ─────────────────────────────
+
+const libraryUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
+
+/** GET /api/creative-library — 라이브러리 전체 목록 (image_data 제외) */
+app.get('/api/creative-library', (req, res) => {
+  const rows = db.prepare(
+    `SELECT id, name, original_name, width, height, file_size, mime_type, ad_id, created_at
+     FROM creative_library ORDER BY created_at DESC`
+  ).all();
+  res.json(rows);
+});
+
+/** POST /api/creative-library/upload — 이미지 업로드 (여러 장, BLOB 저장) */
+app.post('/api/creative-library/upload', libraryUpload.array('images', 50), async (req, res) => {
+  if (!req.files?.length) return res.status(400).json({ error: '이미지 파일이 없습니다' });
+
+  // 1단계: sharp 처리 전부 완료 (async, DB 접근 없음)
+  const processed = await Promise.allSettled(req.files.map(async file => {
+    const id = `lib_${crypto.randomBytes(8).toString('hex')}`;
+    const image = sharp(file.buffer);
+    const meta = await image.metadata();
+    const jpegBuffer = await image.jpeg({ quality: 90 }).toBuffer();
+    return { id, file, meta, jpegBuffer };
+  }));
+
+  // 2단계: 단일 트랜잭션으로 DB 일괄 저장 (동시 쓰기 충돌 방지)
+  const results = [];
+  const insert = db.prepare(`
+    INSERT INTO creative_library (id, name, original_name, width, height, file_size, mime_type, image_data)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertAll = db.transaction(items => {
+    for (const { id, file, meta, jpegBuffer } of items) {
+      insert.run(id, file.originalname.replace(/\.[^/.]+$/, ''), file.originalname,
+        meta.width, meta.height, jpegBuffer.length, 'image/jpeg', jpegBuffer);
+      results.push({ id, name: file.originalname.replace(/\.[^/.]+$/, ''), width: meta.width, height: meta.height });
+    }
+  });
+
+  const successItems = processed.filter(r => r.status === 'fulfilled').map(r => r.value);
+  processed.filter(r => r.status === 'rejected').forEach(r =>
+    logger.warn('Library sharp failed', { error: r.reason?.message })
+  );
+
+  try {
+    insertAll(successItems);
+  } catch (e) {
+    logger.warn('Library DB insert failed', { error: e.message });
+    return res.status(500).json({ error: e.message });
+  }
+  res.json({ success: true, uploaded: results.length, results });
+});
+
+/** PATCH /api/creative-library/:id — 이름 변경 */
+app.patch('/api/creative-library/:id', (req, res) => {
+  const { name } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: 'name required' });
+  const row = db.prepare(`SELECT id FROM creative_library WHERE id = ?`).get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  db.prepare(`UPDATE creative_library SET name = ? WHERE id = ?`).run(name.trim(), req.params.id);
+  res.json({ success: true });
+});
+
+/** PATCH /api/creative-library/:id/ad-mapping — Meta ad_id 연결 */
+app.patch('/api/creative-library/:id/ad-mapping', (req, res) => {
+  const { ad_id } = req.body;
+  const row = db.prepare(`SELECT id FROM creative_library WHERE id = ?`).get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  db.prepare(`UPDATE creative_library SET ad_id = ? WHERE id = ?`).run(ad_id || null, req.params.id);
+  res.json({ success: true });
+});
+
+/** DELETE /api/creative-library/:id — 삭제 */
+app.delete('/api/creative-library/:id', (req, res) => {
+  const row = db.prepare(`SELECT id FROM creative_library WHERE id = ?`).get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  db.prepare(`DELETE FROM creative_library WHERE id = ?`).run(req.params.id);
+  res.json({ success: true });
+});
+
+/** GET /api/creative-library/thumbnail/:id — 이미지 서빙 (<img src> 용, 인증 불필요) */
+app.get('/api/creative-library/thumbnail/:id', (req, res) => {
+  const row = db.prepare(`SELECT image_data, mime_type FROM creative_library WHERE id = ?`).get(req.params.id);
+  if (!row?.image_data) return res.status(404).end();
+  res.setHeader('Content-Type', row.mime_type || 'image/jpeg');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.send(Buffer.from(row.image_data));
+});
+
+/** GET /api/creative-library/image/:id?fieldType=MARKETING_IMAGE — PMAX용 base64 (리사이즈 포함) */
+app.get('/api/creative-library/image/:id', async (req, res) => {
+  const row = db.prepare(`SELECT image_data FROM creative_library WHERE id = ?`).get(req.params.id);
+  if (!row?.image_data) return res.status(404).json({ error: 'Not found' });
+  try {
+    const rawBuffer = Buffer.from(row.image_data);
+    const { fieldType } = req.query;
+    const outputBuffer = fieldType && PMAX_IMAGE_SPECS[fieldType]
+      ? await resizeForPmax(rawBuffer, fieldType)
+      : rawBuffer;
+    res.json({ base64: outputBuffer.toString('base64'), contentType: 'image/jpeg' });
+  } catch (e) {
+    safeError(res, e, 'creative-library-image');
+  }
+});
+
+/** GET /api/meta/ad-list — 라이브러리 매핑용 Meta 광고 목록 (ad_id + ad_name 중복제거) */
+app.get('/api/meta/ad-list', (req, res) => {
+  const rows = db.prepare(`
+    SELECT ad_id, ad_name, campaign_name, adset_name,
+           MAX(date_start) as last_date,
+           SUM(spend) as total_spend
+    FROM ad_performance
+    WHERE platform = 'meta'
+    GROUP BY ad_id
+    ORDER BY total_spend DESC
+    LIMIT 200
+  `).all();
+  res.json(rows);
+});
+
+// ─── Meta Top Creatives (for PMAX reuse) ──────────────────────
+
+/** GET /api/meta/top-creatives — ROAS 기준 Meta 성과 상위 소재 목록 */
+app.get('/api/meta/top-creatives', async (req, res) => {
+  const days = validateDays(req.query.days, 7);
+  const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+  const minSpend = parseFloat(req.query.minSpend) || 0;
+
+  const rows = db.prepare(`
+    SELECT
+      ap.ad_id, ap.ad_name, ap.adset_name, ap.campaign_name,
+      SUM(ap.spend)       as spend,
+      SUM(ap.impressions) as impressions,
+      SUM(ap.clicks)      as clicks,
+      SUM(ap.conversions) as conversions,
+      CASE WHEN SUM(ap.spend) > 0 THEN SUM(ap.conversion_value) / SUM(ap.spend) ELSE 0 END as roas,
+      CASE WHEN SUM(ap.impressions) > 0 THEN CAST(SUM(ap.clicks) AS REAL) / SUM(ap.impressions) * 100 ELSE 0 END as ctr,
+      MAX(ap.image_url) as image_url,
+      (SELECT id FROM creative_library
+       WHERE ad_id = ap.ad_id
+       ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC
+       LIMIT 1) as library_id
+    FROM ad_performance ap
+    WHERE ap.platform = 'meta'
+      AND ap.date_start >= date('now', ? || ' days')
+    GROUP BY ap.ad_id
+    HAVING SUM(ap.spend) >= ?
+    ORDER BY roas DESC
+    LIMIT ?
+  `).all(`-${days}`, minSpend, limit);
+
+  // 라이브러리 이미지 있는 행에 정방형(300×300) base64 썸네일 포함
+  const enriched = await Promise.all(rows.map(async row => {
+    if (!row.library_id) return row;
+    try {
+      const lib = db.prepare(`SELECT image_data FROM creative_library WHERE id = ?`).get(row.library_id);
+      if (!lib?.image_data) return row;
+      const thumb = await sharp(Buffer.from(lib.image_data))
+        .resize(600, 600, { fit: 'cover', position: 'centre' })
+        .jpeg({ quality: 70 })
+        .toBuffer();
+      return { ...row, library_thumb: `data:image/jpeg;base64,${thumb.toString('base64')}` };
+    } catch { return row; }
+  }));
+
+  res.json(enriched);
+});
+
+/**
+ * GET /api/meta/creative-thumbnail/:adId
+ * 로컬 캐시 이미지를 이진 파일로 직접 서빙 (인증 불필요 — <img src> 태그용)
+ * 로컬 없으면 404 (CDN fallback 없음 — 보안상 외부 URL 미노출)
+ */
+app.get('/api/meta/creative-thumbnail/:adId', (req, res) => {
+  const localPath = path.join(CREATIVE_IMAGE_DIR, `${req.params.adId}.jpg`);
+  if (!fs.existsSync(localPath)) return res.status(404).end();
+  res.setHeader('Content-Type', 'image/jpeg');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  fs.createReadStream(localPath).pipe(res);
+});
+
+/**
+ * GET /api/meta/creative-image/:adId?fieldType=MARKETING_IMAGE
+ * 로컬 캐시 → Meta CDN URL 순으로 이미지를 가져온 뒤
+ * fieldType이 지정된 경우 PMAX 요구 사양에 맞게 자동 리사이즈
+ */
+app.get('/api/meta/creative-image/:adId', async (req, res) => {
+  const { adId } = req.params;
+  const { fieldType } = req.query;
+  const localPath = path.join(CREATIVE_IMAGE_DIR, `${adId}.jpg`);
+
+  let rawBuffer = null;
+
+  // 0) 소재 라이브러리 우선 — fieldType 규격과 일치하는 크기 우선 선택
+  const spec = PMAX_IMAGE_SPECS[fieldType];
+  const libRow = db.prepare(`
+    SELECT image_data FROM creative_library
+    WHERE ad_id = ? AND image_data IS NOT NULL
+    ORDER BY CASE WHEN width = ? AND height = ? THEN 0 ELSE 1 END, created_at DESC
+    LIMIT 1
+  `).get(adId, spec?.width ?? 0, spec?.height ?? 0);
+  if (libRow?.image_data) {
+    rawBuffer = Buffer.from(libRow.image_data);
+  }
+
+  // 1) 로컬 캐시
+  if (!rawBuffer && fs.existsSync(localPath)) {
+    rawBuffer = fs.readFileSync(localPath);
+  }
+
+  if (!rawBuffer) {
+    // 2) DB에서 URL 조회 후 다운로드 + 캐시
+    const row = db.prepare(
+      `SELECT image_url FROM ad_performance WHERE ad_id = ? AND image_url IS NOT NULL AND image_url != '' LIMIT 1`
+    ).get(adId);
+
+    if (!row?.image_url) {
+      return res.status(404).json({ error: '이미지를 찾을 수 없습니다. 서버 수집 후 다시 시도하세요.' });
+    }
+
+    try {
+      const response = await fetch(row.image_url, { signal: AbortSignal.timeout(15000) });
+      if (!response.ok) throw new Error(`이미지 다운로드 실패 (HTTP ${response.status})`);
+      rawBuffer = Buffer.from(await response.arrayBuffer());
+
+      // 로컬 캐시 저장
+      try {
+        fs.mkdirSync(CREATIVE_IMAGE_DIR, { recursive: true });
+        fs.writeFileSync(localPath, rawBuffer);
+      } catch (_) {}
+    } catch (e) {
+      return safeError(res, e, 'creative-image');
+    }
+  }
+
+  try {
+    // fieldType이 있으면 PMAX 사양에 맞게 리사이즈
+    const outputBuffer = fieldType && PMAX_IMAGE_SPECS[fieldType]
+      ? await resizeForPmax(rawBuffer, fieldType)
+      : rawBuffer;
+
+    const spec = PMAX_IMAGE_SPECS[fieldType];
+    res.json({
+      base64: outputBuffer.toString('base64'),
+      contentType: 'image/jpeg',
+      source: fs.existsSync(localPath) ? 'local' : 'proxy',
+      resized: !!(fieldType && spec),
+      dimensions: spec || null,
+    });
+  } catch (e) {
+    safeError(res, e, 'creative-image-resize');
+  }
+});
+
+/**
+ * POST /api/meta/proxy-image
+ * Meta CDN 이미지 URL을 서버에서 다운로드 → base64 반환
+ * (Meta CDN URL은 브라우저에서 직접 fetch 불가 — 서버 중계 필요)
+ */
+app.post('/api/meta/proxy-image', async (req, res) => {
+  const { url } = req.body;
+  if (!url || typeof url !== 'string') return res.status(400).json({ error: 'url required' });
+
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error(`이미지 다운로드 실패 (HTTP ${response.status})`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.json({
+      base64: buffer.toString('base64'),
+      contentType: response.headers.get('content-type') || 'image/jpeg',
+      size: buffer.length,
+    });
+  } catch (e) {
+    safeError(res, e, 'proxy-image');
+  }
+});
+
 // ─── Google Ads Creative Endpoints ────────────────────────────
 
 /** GET /api/google/pmax-campaigns — list PMAX campaigns from Google Ads API */
@@ -1000,7 +1329,7 @@ app.post('/api/audiences/apply', async (req, res) => {
 // ─── Ad Performance (Creative-level) ─────────────────────────────
 
 /** GET /api/ad-performance — Ad-level performance data for Creatives gallery */
-app.get('/api/ad-performance', (req, res) => {
+app.get('/api/ad-performance', async (req, res) => {
   const { platform, sort, order, since, until } = req.query;
   const days = validateDays(req.query.days, 7);
 
@@ -1014,42 +1343,71 @@ app.get('/api/ad-performance', (req, res) => {
 
   let query = `
     SELECT
-      ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name,
-      platform, date_start,
-      SUM(impressions) as impressions,
-      SUM(clicks) as clicks,
-      SUM(spend) as spend,
-      SUM(conversions) as conversions,
-      SUM(conversion_value) as conversion_value,
-      CASE WHEN SUM(impressions) > 0 THEN CAST(SUM(clicks) AS REAL) / SUM(impressions) * 100 ELSE 0 END as ctr,
-      CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
-      CASE WHEN SUM(impressions) > 0 THEN SUM(spend) / SUM(impressions) * 1000 ELSE 0 END as cpm,
-      CASE WHEN SUM(spend) > 0 THEN SUM(conversion_value) / SUM(spend) ELSE 0 END as roas,
-      CASE WHEN SUM(conversions) > 0 THEN SUM(spend) / SUM(conversions) ELSE 0 END as cpa,
-      MAX(collected_at) as collected_at,
-      MAX(image_url) as image_url
-    FROM ad_performance
-    WHERE ${since && until ? 'date_start >= ? AND date_start <= ?' : "date_start >= date('now', ? || ' days')"}
+      ap.ad_id, ap.ad_name, ap.adset_id, ap.adset_name, ap.campaign_id, ap.campaign_name,
+      ap.platform, ap.date_start,
+      SUM(ap.impressions) as impressions,
+      SUM(ap.clicks) as clicks,
+      SUM(ap.spend) as spend,
+      SUM(ap.conversions) as conversions,
+      SUM(ap.conversion_value) as conversion_value,
+      CASE WHEN SUM(ap.impressions) > 0 THEN CAST(SUM(ap.clicks) AS REAL) / SUM(ap.impressions) * 100 ELSE 0 END as ctr,
+      CASE WHEN SUM(ap.clicks) > 0 THEN SUM(ap.spend) / SUM(ap.clicks) ELSE 0 END as cpc,
+      CASE WHEN SUM(ap.impressions) > 0 THEN SUM(ap.spend) / SUM(ap.impressions) * 1000 ELSE 0 END as cpm,
+      CASE WHEN SUM(ap.spend) > 0 THEN SUM(ap.conversion_value) / SUM(ap.spend) ELSE 0 END as roas,
+      CASE WHEN SUM(ap.conversions) > 0 THEN SUM(ap.spend) / SUM(ap.conversions) ELSE 0 END as cpa,
+      MAX(ap.collected_at) as collected_at,
+      MAX(ap.image_url) as image_url,
+      (SELECT id FROM creative_library
+       WHERE ad_id = ap.ad_id
+       ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC
+       LIMIT 1) as library_id
+    FROM ad_performance ap
+    WHERE ${since && until ? 'ap.date_start >= ? AND ap.date_start <= ?' : "ap.date_start >= date('now', ? || ' days')"}
   `;
   const params = since && until ? [since, until] : [`-${days}`];
 
   if (platform) {
-    query += ' AND platform = ?';
+    query += ' AND ap.platform = ?';
     params.push(platform);
   }
   if (req.query.campaign_id) {
-    query += ' AND campaign_id = ?';
+    query += ' AND ap.campaign_id = ?';
     params.push(req.query.campaign_id);
   }
   if (req.query.adset_id) {
-    query += ' AND adset_id = ?';
+    query += ' AND ap.adset_id = ?';
     params.push(req.query.adset_id);
   }
 
-  query += ` GROUP BY ad_id, platform ORDER BY ${sortCol} ${sortOrder}`;
+  query += ` GROUP BY ap.ad_id, ap.platform ORDER BY ${sortCol} ${sortOrder}`;
 
-  const rows = db.prepare(query).all(...params);
-  res.json(rows);
+  let rows;
+  try {
+    rows = db.prepare(query).all(...params);
+  } catch (e) {
+    return safeError(res, e, 'ad-performance');
+  }
+
+  // library_id 있는 행에 base64 썸네일 포함 (300px 리사이즈)
+  try {
+    const enriched = await Promise.all(rows.map(async row => {
+      if (!row.library_id) return row;
+      try {
+        const lib = db.prepare(`SELECT image_data FROM creative_library WHERE id = ?`).get(row.library_id);
+        if (!lib?.image_data) return row;
+        const thumb = await sharp(Buffer.from(lib.image_data))
+          .resize(600, 600, { fit: 'cover', position: 'centre' })
+          .jpeg({ quality: 70 })
+          .toBuffer();
+        return { ...row, library_thumb: `data:image/jpeg;base64,${thumb.toString('base64')}` };
+      } catch { return row; }
+    }));
+    res.json(enriched);
+  } catch (e) {
+    // enrichment 실패 시 원본 데이터라도 반환
+    logger.warn('ad-performance enrichment failed', { error: e.message });
+    res.json(rows);
+  }
 });
 
 /** GET /api/ad-performance/summary — Aggregate stats for the Creatives header */

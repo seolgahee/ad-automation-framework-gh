@@ -428,6 +428,43 @@ export class DataCollector extends EventEmitter {
       }
     }
 
+    // ── 소재 기준 알림: 슈즈 캠페인 저성과 소재 ──
+    const today = new Date().toISOString().split('T')[0];
+    const lowRoasAds = db.prepare(`
+      SELECT
+        ap.ad_id,
+        ap.ad_name,
+        ap.campaign_name,
+        ap.campaign_id,
+        SUM(ap.spend)       as spend,
+        CASE WHEN SUM(ap.spend) > 0 THEN SUM(ap.conversion_value) / SUM(ap.spend) ELSE 0 END as roas
+      FROM ad_performance ap
+      WHERE ap.platform = 'meta'
+        AND ap.campaign_name LIKE '%슈즈%'
+        AND ap.date_start = ?
+      GROUP BY ap.ad_id
+      HAVING spend >= 40000 AND roas < 1
+    `).all(today);
+
+    for (const ad of lowRoasAds) {
+      // 오늘 이미 동일 소재 알림이 발송됐으면 스킵
+      const alreadySent = db.prepare(`
+        SELECT 1 FROM alerts
+        WHERE alert_type = 'creative_low_roas'
+          AND campaign_id = ?
+          AND message LIKE ?
+          AND created_at >= date('now')
+      `).get(ad.campaign_id, `%${ad.ad_id}%`);
+      if (alreadySent) continue;
+
+      const msg = `🚨 [슈즈 소재 저성과] ${ad.ad_name || ad.ad_id}\n캠페인: ${ad.campaign_name}\n지출: ₩${krwFmt.format(Math.round(ad.spend))} / ROAS: ${ad.roas.toFixed(2)}`;
+      insertAlert.run(ad.campaign_id, 'creative_low_roas', 'warning', msg);
+      broadcastQueue.push(() => notifier.broadcast(msg, {
+        severity: 'warning',
+        data: { 소재: ad.ad_name || ad.ad_id, 캠페인: ad.campaign_name, 지출: `₩${krwFmt.format(Math.round(ad.spend))}`, ROAS: ad.roas.toFixed(2) },
+      }));
+    }
+
     // Fire all notifications in parallel (deferred until all DB inserts complete)
     if (broadcastQueue.length > 0) {
       const results = await Promise.allSettled(broadcastQueue.map(fn => fn()));

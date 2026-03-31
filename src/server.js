@@ -20,6 +20,8 @@ import crypto from 'crypto';
 import path from 'path';
 import { getAdapter } from './utils/platform-adapter.js';
 import { startSlackBot } from './slack-bot.js';
+import notifier from './utils/notifier.js';
+import { krwFmt } from './utils/format.js';
 import multer from 'multer';
 import fs from 'fs';
 import sharp from 'sharp';
@@ -285,8 +287,8 @@ app.get('/api/overview', (req, res) => {
 app.get('/api/campaigns', (req, res) => {
   const campaigns = db.prepare(`
     SELECT c.*,
-      (SELECT SUM(p.spend) FROM performance p WHERE p.campaign_id = c.id AND p.date_start >= date('now', '-1 day')) as today_spend,
-      (SELECT SUM(p.conversions) FROM performance p WHERE p.campaign_id = c.id AND p.date_start >= date('now', '-1 day')) as today_conversions,
+      (SELECT SUM(p.spend) FROM performance p WHERE p.campaign_id = c.id AND p.date_start >= date('now', '-7 days')) as today_spend,
+      (SELECT SUM(p.conversions) FROM performance p WHERE p.campaign_id = c.id AND p.date_start >= date('now', '-7 days')) as today_conversions,
       (SELECT CASE WHEN SUM(p.spend) > 0 THEN SUM(p.conversion_value) / SUM(p.spend) ELSE 0 END FROM performance p WHERE p.campaign_id = c.id AND p.date_start >= date('now', '-7 days')) as week_roas
     FROM campaigns c
     WHERE c.status = 'ACTIVE'
@@ -1586,6 +1588,63 @@ app.post('/api/collect', async (req, res) => {
   } catch (err) {
     logger.error('Manual collection failed', { error: err.message });
     res.status(500).json({ error: 'Collection failed', details: err.message });
+  }
+});
+
+// ─── Slack 수동 발송 ──────────────────────────────────────────
+app.post('/api/alerts/send-now', async (req, res) => {
+  try {
+    const lowRoasAds = db.prepare(`
+      SELECT ap.ad_id, ap.ad_name, ap.campaign_name, ap.campaign_id,
+        SUM(ap.spend) as spend,
+        CASE WHEN SUM(ap.spend) > 0 THEN SUM(ap.conversion_value) / SUM(ap.spend) ELSE 0 END as roas
+      FROM ad_performance ap
+      WHERE ap.platform = 'meta'
+        AND ap.campaign_name LIKE '%슈즈%'
+        AND ap.date_start >= date('now', '-6 days')
+      GROUP BY ap.ad_id
+      HAVING SUM(ap.spend) >= 40000
+        AND (CASE WHEN SUM(ap.spend) > 0 THEN SUM(ap.conversion_value) / SUM(ap.spend) ELSE 0 END) < 1
+    `).all();
+
+    if (lowRoasAds.length === 0) {
+      return res.json({ success: true, sent: 0, message: '조건 충족 소재 없음' });
+    }
+
+    const lowRoasTraining = db.prepare(`
+      SELECT ap.ad_id, ap.ad_name, ap.campaign_name, ap.campaign_id,
+        SUM(ap.spend) as spend,
+        CASE WHEN SUM(ap.spend) > 0 THEN SUM(ap.conversion_value) / SUM(ap.spend) ELSE 0 END as roas
+      FROM ad_performance ap
+      WHERE ap.platform = 'meta'
+        AND ap.campaign_name LIKE '%트레이닝%'
+        AND ap.date_start >= date('now', '-6 days')
+      GROUP BY ap.ad_id
+      HAVING SUM(ap.spend) >= 100000
+        AND (CASE WHEN SUM(ap.spend) > 0 THEN SUM(ap.conversion_value) / SUM(ap.spend) ELSE 0 END) < 1
+    `).all();
+
+    const allAds = [
+      ...lowRoasAds.map(ad => ({ ...ad, label: '슈즈' })),
+      ...lowRoasTraining.map(ad => ({ ...ad, label: '트레이닝' })),
+    ];
+
+    if (allAds.length === 0) {
+      return res.json({ success: true, sent: 0, message: '조건 충족 소재 없음' });
+    }
+
+    const insertAlert = db.prepare(`INSERT INTO alerts (campaign_id, alert_type, severity, message) VALUES (?, ?, ?, ?)`);
+    let sent = 0;
+    for (const ad of allAds) {
+      const msg = `🚨 [${ad.label} 소재 저성과] ${ad.ad_name || ad.ad_id}\n캠페인: ${ad.campaign_name}\n지출: ₩${krwFmt.format(Math.round(ad.spend))} / ROAS: ${ad.roas.toFixed(2)}`;
+      insertAlert.run(ad.campaign_id, 'creative_low_roas', 'warning', msg);
+      await notifier.broadcast(msg, { severity: 'warning', data: { 소재: ad.ad_name || ad.ad_id, 지출: `₩${krwFmt.format(Math.round(ad.spend))}`, ROAS: ad.roas.toFixed(2) } });
+      if (allAds.length > 1) await new Promise(r => setTimeout(r, 1000));
+      sent++;
+    }
+    res.json({ success: true, sent, message: `${sent}개 소재 알림 발송 완료` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 

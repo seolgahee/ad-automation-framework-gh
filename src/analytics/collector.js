@@ -381,55 +381,13 @@ export class DataCollector extends EventEmitter {
 
   /** Analyze latest data and fire alerts */
   async _analyzeAndAlert() {
-    const latestPerf = db.prepare(`
-      SELECT p.*, c.name as campaign_name, c.daily_budget
-      FROM performance p
-      JOIN campaigns c ON p.campaign_id = c.id
-      WHERE p.collected_at >= datetime('now', '-30 minutes')
-      ORDER BY p.collected_at DESC
-    `).all();
-
     const insertAlert = db.prepare(`
       INSERT INTO alerts (campaign_id, alert_type, severity, message) VALUES (?, ?, ?, ?)
     `);
 
-    // Collect deferred broadcast functions (not yet executed)
     const broadcastQueue = [];
 
-    for (const row of latestPerf) {
-      // Low ROAS alert
-      if (row.spend > 0 && row.roas > 0 && row.roas < this.thresholds.roasMin) {
-        const msg = `[${row.campaign_name}] ROAS ${row.roas.toFixed(2)} — 목표(${this.thresholds.roasMin}) 미달`;
-        insertAlert.run(row.campaign_id, 'low_roas', 'warning', msg);
-        broadcastQueue.push(() => notifier.broadcast(msg, {
-          severity: 'warning',
-          data: { Campaign: row.campaign_name, ROAS: row.roas.toFixed(2), Spend: `₩${krwFmt.format(row.spend)}` },
-        }));
-      }
-
-      // High CPA alert
-      if (row.cpa > 0 && row.cpa > this.thresholds.cpaMax) {
-        const msg = `[${row.campaign_name}] CPA ₩${row.cpa.toFixed(0)} — 임계값(₩${this.thresholds.cpaMax}) 초과`;
-        insertAlert.run(row.campaign_id, 'high_cpa', 'warning', msg);
-        broadcastQueue.push(() => notifier.broadcast(msg, { severity: 'warning' }));
-      }
-
-      // Budget burn rate alert
-      if (row.daily_budget && row.daily_budget > 0) {
-        const burnRate = row.spend / row.daily_budget;
-        const hoursElapsed = new Date().getHours();
-        const expectedBurn = hoursElapsed / 24;
-
-        if (burnRate > this.thresholds.budgetBurnRate && burnRate > expectedBurn * 1.3) {
-          const msg = `[${row.campaign_name}] 예산 소진률 ${(burnRate * 100).toFixed(1)}% — 조기 소진 우려`;
-          insertAlert.run(row.campaign_id, 'budget_burn', 'critical', msg);
-          broadcastQueue.push(() => notifier.broadcast(msg, { severity: 'critical' }));
-        }
-      }
-    }
-
-    // ── 소재 기준 알림: 슈즈 캠페인 저성과 소재 ──
-    const today = new Date().toISOString().split('T')[0];
+    // ── 소재 기준 알림: 슈즈 캠페인 저성과 소재 (최근 7일 합산) ──
     const lowRoasAds = db.prepare(`
       SELECT
         ap.ad_id,
@@ -441,10 +399,11 @@ export class DataCollector extends EventEmitter {
       FROM ad_performance ap
       WHERE ap.platform = 'meta'
         AND ap.campaign_name LIKE '%슈즈%'
-        AND ap.date_start = ?
+        AND ap.date_start >= date('now', '-6 days')
       GROUP BY ap.ad_id
-      HAVING spend >= 40000 AND roas < 1
-    `).all(today);
+      HAVING SUM(ap.spend) >= 40000
+        AND (CASE WHEN SUM(ap.spend) > 0 THEN SUM(ap.conversion_value) / SUM(ap.spend) ELSE 0 END) < 1
+    `).all();
 
     for (const ad of lowRoasAds) {
       // 오늘 이미 동일 소재 알림이 발송됐으면 스킵
@@ -465,10 +424,50 @@ export class DataCollector extends EventEmitter {
       }));
     }
 
-    // Fire all notifications in parallel (deferred until all DB inserts complete)
+    // ── 소재 기준 알림: 트레이닝 캠페인 저성과 소재 (최근 7일 합산) ──
+    const lowRoasTraining = db.prepare(`
+      SELECT
+        ap.ad_id,
+        ap.ad_name,
+        ap.campaign_name,
+        ap.campaign_id,
+        SUM(ap.spend)       as spend,
+        CASE WHEN SUM(ap.spend) > 0 THEN SUM(ap.conversion_value) / SUM(ap.spend) ELSE 0 END as roas
+      FROM ad_performance ap
+      WHERE ap.platform = 'meta'
+        AND ap.campaign_name LIKE '%트레이닝%'
+        AND ap.date_start >= date('now', '-6 days')
+      GROUP BY ap.ad_id
+      HAVING SUM(ap.spend) >= 100000
+        AND (CASE WHEN SUM(ap.spend) > 0 THEN SUM(ap.conversion_value) / SUM(ap.spend) ELSE 0 END) < 1
+    `).all();
+
+    for (const ad of lowRoasTraining) {
+      const alreadySent = db.prepare(`
+        SELECT 1 FROM alerts
+        WHERE alert_type = 'creative_low_roas'
+          AND campaign_id = ?
+          AND message LIKE ?
+          AND created_at >= date('now')
+      `).get(ad.campaign_id, `%${ad.ad_id}%`);
+      if (alreadySent) continue;
+
+      const msg = `🚨 [트레이닝 소재 저성과] ${ad.ad_name || ad.ad_id}\n캠페인: ${ad.campaign_name}\n지출: ₩${krwFmt.format(Math.round(ad.spend))} / ROAS: ${ad.roas.toFixed(2)}`;
+      insertAlert.run(ad.campaign_id, 'creative_low_roas', 'warning', msg);
+      broadcastQueue.push(() => notifier.broadcast(msg, {
+        severity: 'warning',
+        data: { 소재: ad.ad_name || ad.ad_id, 캠페인: ad.campaign_name, 지출: `₩${krwFmt.format(Math.round(ad.spend))}`, ROAS: ad.roas.toFixed(2) },
+      }));
+    }
+
+    // Fire notifications sequentially with delay (Slack webhook rate limit 방지)
     if (broadcastQueue.length > 0) {
-      const results = await Promise.allSettled(broadcastQueue.map(fn => fn()));
-      const failed = results.filter(r => r.status === 'rejected');
+      const results = [];
+      for (const fn of broadcastQueue) {
+        results.push(await Promise.allSettled([fn()]));
+        if (broadcastQueue.length > 1) await new Promise(r => setTimeout(r, 1000));
+      }
+      const failed = results.flat().filter(r => r.status === 'rejected');
       if (failed.length > 0) {
         logger.warn(`${failed.length}/${results.length} broadcast(s) failed`);
       }

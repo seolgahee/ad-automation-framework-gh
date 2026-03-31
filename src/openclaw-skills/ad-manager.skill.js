@@ -24,6 +24,7 @@ import { getIntentClassifier, INTENT_DEFINITIONS } from '../utils/intent-classif
 import { krwFmt } from '../utils/format.js';
 import db from '../utils/db.js';
 import logger from '../utils/logger.js';
+import Anthropic from '@anthropic-ai/sdk';
 
 /** Pre-compiled platform detection patterns (avoid per-call regex compilation) */
 const PLATFORM_PATTERNS = [
@@ -53,24 +54,92 @@ export class AdManagerSkill {
     this.templates = getTemplateEngine();
   }
 
-  /** Route incoming message via intent classification (TF-IDF + cosine similarity) */
+  /** Claude API로 자연어 메시지 처리 */
   async handleMessage(message, context) {
-    const classifier = getIntentClassifier();
-    const result = classifier.classify(message);
-
-    if (result && result.confidence >= 0.15 && typeof this[result.handler] === 'function') {
-      logger.info('Intent classified', {
-        intent: result.intent,
-        confidence: result.confidence,
-        alternatives: result.alternatives?.length || 0,
-      });
-      return this[result.handler](message, context);
+    // Claude API 키 없으면 기존 키워드 방식으로 폴백
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return this._keywordFallback(message, context);
     }
 
-    // Fallback: show available commands with intent descriptions
+    try {
+      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+      // 현재 광고 데이터 수집 (컨텍스트로 주입)
+      const contextData = this._buildContext();
+
+      const response = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1024,
+        system: `당신은 광고 성과 분석 AI 어시스턴트입니다. 아래 광고 데이터를 기반으로 질문에 답하세요.
+답변은 간결하고 핵심만 전달하세요. 숫자는 한국어 형식(₩, 쉼표 구분)으로 표기하세요.
+
+--- 현재 광고 데이터 ---
+${contextData}
+---`,
+        messages: [{ role: 'user', content: message }],
+      });
+
+      return response.content[0]?.text || '응답을 받지 못했습니다.';
+    } catch (e) {
+      logger.error('Claude API error', { error: e.message });
+      return this._keywordFallback(message, context);
+    }
+  }
+
+  /** 현재 광고 데이터를 텍스트로 정리 */
+  _buildContext() {
+    const since = new Date(Date.now() - 6 * 86400000).toISOString().split('T')[0];
+    const until = new Date().toISOString().split('T')[0];
+
+    const campaigns = db.prepare(`
+      SELECT name, platform, status, daily_budget,
+        (SELECT SUM(spend) FROM performance WHERE campaign_id = campaigns.id AND date_start >= ?) as week_spend,
+        (SELECT CASE WHEN SUM(spend)>0 THEN SUM(conversion_value)/SUM(spend) ELSE 0 END FROM performance WHERE campaign_id = campaigns.id AND date_start >= ?) as week_roas
+      FROM campaigns WHERE status = 'ACTIVE' ORDER BY platform, name
+    `).all(since, since);
+
+    const topAds = db.prepare(`
+      SELECT ad_name, campaign_name, platform,
+        SUM(spend) as spend,
+        CASE WHEN SUM(spend)>0 THEN SUM(conversion_value)/SUM(spend) ELSE 0 END as roas,
+        CASE WHEN SUM(impressions)>0 THEN CAST(SUM(clicks) AS REAL)/SUM(impressions)*100 ELSE 0 END as ctr
+      FROM ad_performance
+      WHERE date_start >= ? AND platform = 'meta'
+      GROUP BY ad_id
+      ORDER BY spend DESC LIMIT 10
+    `).all(since);
+
+    const alerts = db.prepare(`SELECT message, created_at FROM alerts ORDER BY created_at DESC LIMIT 5`).all();
+
+    let ctx = `[기간: ${since} ~ ${until}]\n\n`;
+    ctx += `[활성 캠페인 (${campaigns.length}개)]\n`;
+    campaigns.forEach(c => {
+      ctx += `- ${c.platform.toUpperCase()} | ${c.name} | 7일지출: ₩${krwFmt.format(Math.round(c.week_spend || 0))} | 7일ROAS: ${(c.week_roas || 0).toFixed(2)}\n`;
+    });
+
+    ctx += `\n[Meta 소재 성과 상위 10개]\n`;
+    topAds.forEach(a => {
+      ctx += `- ${a.ad_name} | 지출: ₩${krwFmt.format(Math.round(a.spend))} | ROAS: ${a.roas.toFixed(2)} | CTR: ${a.ctr.toFixed(2)}%\n`;
+    });
+
+    if (alerts.length > 0) {
+      ctx += `\n[최근 알림]\n`;
+      alerts.forEach(a => { ctx += `- ${a.message}\n`; });
+    }
+
+    return ctx;
+  }
+
+  /** Claude API 키 없을 때 기존 키워드 방식 */
+  async _keywordFallback(message, context) {
+    const classifier = getIntentClassifier();
+    const result = classifier.classify(message);
+    if (result && result.confidence >= 0.15 && typeof this[result.handler] === 'function') {
+      return this[result.handler](message, context);
+    }
     const intents = classifier.getIntentNames();
     const cmdList = intents.map(i => `• ${i.description}`).join('\n');
-    return `죄송합니다, 요청을 이해하지 못했습니다.\n\n사용 가능한 명령어:\n${cmdList}\n\n예시: "오늘 광고 성과 알려줘", "예산 50만원으로 변경", "캠페인 일시중지"`;
+    return `죄송합니다, 요청을 이해하지 못했습니다.\n\n사용 가능한 명령어:\n${cmdList}`;
   }
 
   /** 성과 조회 */

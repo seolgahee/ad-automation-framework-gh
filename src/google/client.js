@@ -168,10 +168,10 @@ export class GoogleAdsClient extends BaseAdsClient {
   /** Pause or enable a campaign */
   async setCampaignStatus(campaignId, status) {
     this._ensureConfigured();
-    await this._withTimeout(this.customer.campaigns.update({
+    await this._withTimeout(this.customer.campaigns.update([{
       resource_name: `customers/${this.customerId}/campaigns/${campaignId}`,
       status: enums.CampaignStatus[status],
-    }), 'setCampaignStatus');
+    }]), 'setCampaignStatus');
     logger.info('Google campaign status updated', { campaignId, status });
   }
 

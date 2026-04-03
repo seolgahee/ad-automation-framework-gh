@@ -54,80 +54,362 @@ export class AdManagerSkill {
     this.templates = getTemplateEngine();
   }
 
-  /** Claude API로 자연어 메시지 처리 */
+  /** Claude API로 자연어 메시지 처리 (tool use 지원) */
   async handleMessage(message, context) {
-    // Claude API 키 없으면 기존 키워드 방식으로 폴백
     if (!process.env.ANTHROPIC_API_KEY) {
       return this._keywordFallback(message, context);
     }
 
     try {
       const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      const today = new Date().toISOString().split('T')[0];
 
-      // 현재 광고 데이터 수집 (컨텍스트로 주입)
-      const contextData = this._buildContext();
+      const tools = [
+        {
+          name: 'get_overview',
+          description: '특정 기간/플랫폼의 KPI 요약 (지출, ROAS, 전환수 등). 전체 성과 파악에 사용.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              since: { type: 'string', description: 'YYYY-MM-DD 시작일' },
+              until: { type: 'string', description: 'YYYY-MM-DD 종료일' },
+              platform: { type: 'string', enum: ['meta', 'google', 'naver'], description: '플랫폼' },
+            },
+            required: ['since', 'until', 'platform'],
+          },
+        },
+        {
+          name: 'get_daily_timeline',
+          description: '일별 성과 시계열 데이터. 날짜별 추이 비교, ROAS 변동 분석에 사용.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              since: { type: 'string', description: 'YYYY-MM-DD 시작일' },
+              until: { type: 'string', description: 'YYYY-MM-DD 종료일' },
+              platform: { type: 'string', enum: ['meta', 'google', 'naver'] },
+            },
+            required: ['since', 'until', 'platform'],
+          },
+        },
+        {
+          name: 'get_ad_performance',
+          description: '소재(Ad)별 성과 데이터. 소재 비교, 상위/하위 소재 분석에 사용. 특정 상품코드나 소재명이 언급된 경우 반드시 name_filter를 지정할 것.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              since: { type: 'string', description: 'YYYY-MM-DD 시작일' },
+              until: { type: 'string', description: 'YYYY-MM-DD 종료일' },
+              platform: { type: 'string', enum: ['meta', 'google'] },
+              sort: { type: 'string', enum: ['spend', 'roas', 'ctr', 'conversions'], description: '정렬 기준' },
+              name_filter: { type: 'string', description: '소재명 키워드 필터 (예: "DXSH5336N"). 지정 시 해당 키워드가 포함된 소재만 반환.' },
+            },
+            required: ['since', 'until', 'platform'],
+          },
+        },
+        {
+          name: 'get_campaign_performance',
+          description: '캠페인별 성과 데이터 조회 (노출, 클릭, 지출, 전환, ROAS, CPA 등). 예산 조정 추천 시 반드시 이 툴을 사용할 것. get_overview 대신 사용.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              since:    { type: 'string', description: 'YYYY-MM-DD 시작일' },
+              until:    { type: 'string', description: 'YYYY-MM-DD 종료일' },
+              platform: { type: 'string', enum: ['meta', 'google'], description: '플랫폼' },
+            },
+            required: ['since', 'until', 'platform'],
+          },
+        },
+        {
+          name: 'get_campaigns',
+          description: '캠페인 목록과 현재 예산 조회. campaign_id 확인 시 사용.',
+          input_schema: { type: 'object', properties: {}, required: [] },
+        },
+        {
+          name: 'update_budget',
+          description: '캠페인 일일예산 변경. 반드시 get_campaigns로 campaign_id를 먼저 확인한 후 호출할 것.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              platform:      { type: 'string', enum: ['meta'], description: '플랫폼 (현재 Meta만 지원)' },
+              campaign_id:   { type: 'string', description: '변경할 캠페인 ID' },
+              campaign_name: { type: 'string', description: '변경할 캠페인명 (응답 확인용)' },
+              daily_budget:  { type: 'number', description: '새 일일예산 (원 단위, 예: 500000)' },
+            },
+            required: ['platform', 'campaign_id', 'campaign_name', 'daily_budget'],
+          },
+        },
+      ];
 
-      const response = await anthropic.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1024,
-        system: `당신은 광고 성과 분석 AI 어시스턴트입니다. 아래 광고 데이터를 기반으로 질문에 답하세요.
+      const messages = [{ role: 'user', content: message }];
+      const systemPrompt = `당신은 광고 성과 분석 AI 어시스턴트입니다. 오늘은 ${today}입니다.
+질문에 답하기 위해 필요한 데이터를 tool을 통해 먼저 조회하세요.
 답변은 간결하고 핵심만 전달하세요. 숫자는 한국어 형식(₩, 쉼표 구분)으로 표기하세요.
+데이터 없이 추측하지 말고, tool 조회 결과를 기반으로 답변하세요.
 
---- 현재 광고 데이터 ---
-${contextData}
----`,
-        messages: [{ role: 'user', content: message }],
+[광고 소재 네이밍 규칙]
+소재명 형식: [상품코드]_[소재타입]_[버전] 또는 [상품코드]가 포함된 형태
+예: DXSH5336N_이미지_v1, DXSH3115N_동영상_A, [상품코드]_카탈로그
+
+[필터링 규칙 — 반드시 준수]
+- 사용자가 특정 상품코드(예: DXSH5336N, DXSH3115N 등 영문+숫자 조합)를 언급하면
+  get_ad_performance 호출 시 name_filter에 해당 코드를 반드시 지정할 것
+- tool 결과에서 name_filter와 무관한 소재 데이터를 섞어서 집계하지 말 것
+- 필터링 후 결과가 없으면 "해당 상품코드의 소재를 찾을 수 없습니다"로 답변할 것
+- 전체 계정 합산 수치를 특정 상품의 성과로 오인하여 답변하지 말 것
+
+[예산 변경 규칙 — 반드시 준수]
+- 예산 변경 요청 시 반드시 get_campaigns를 먼저 호출해 campaign_id를 확인한 후 update_budget을 호출할 것
+- 캠페인명이 부정확하거나 여러 개 일치하는 경우 사용자에게 확인을 요청할 것
+- 변경 완료 후 "캠페인명 / 기존예산 → 새예산" 형태로 결과를 명확히 알릴 것
+- 예산 단위는 항상 원(₩) 기준이며, "50만원" = 500000원으로 해석할 것
+
+[캠페인별 예산 조정 추천 워크플로우]
+사용자가 "캠페인별 성과 요약 + 예산 조정 추천"을 요청하면:
+1. get_campaign_performance로 기간별 캠페인 성과 조회
+2. 각 캠페인의 ROAS, 전환수, 지출 기준으로 아래 기준 적용:
+   - ROAS 3.0 이상 & 전환 5건 이상 → 예산 20~30% 증액 추천
+   - ROAS 2.0~3.0 → 현행 유지 추천
+   - ROAS 1.5 미만 또는 지출 10만 이상 & 전환 0 → 감액 또는 중단 추천
+3. 추천 결과를 표 형태로 제시: 캠페인명 | 현재예산 | ROAS | 추천액 | 사유
+4. 마지막에 "적용할 캠페인을 말씀해주세요" 안내
+5. 사용자가 적용 요청 시 update_budget 실행`;
+
+      // tool use 루프
+      let response = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 2048,
+        system: systemPrompt,
+        tools,
+        messages,
       });
 
-      return response.content[0]?.text || '응답을 받지 못했습니다.';
+      while (response.stop_reason === 'tool_use') {
+        const toolUses = response.content.filter(b => b.type === 'tool_use');
+        messages.push({ role: 'assistant', content: response.content });
+
+        const toolResults = await Promise.all(toolUses.map(async tu => {
+          let result;
+          try {
+            result = await this._executeTool(tu.name, tu.input);
+          } catch (e) {
+            result = { error: e.message };
+          }
+          return {
+            type: 'tool_result',
+            tool_use_id: tu.id,
+            content: JSON.stringify(result),
+          };
+        }));
+
+        messages.push({ role: 'user', content: toolResults });
+
+        response = await anthropic.messages.create({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 2048,
+          system: systemPrompt,
+          tools,
+          messages,
+        });
+      }
+
+      return response.content.find(b => b.type === 'text')?.text || '응답을 받지 못했습니다.';
     } catch (e) {
       logger.error('Claude API error', { error: e.message });
       return this._keywordFallback(message, context);
     }
   }
 
-  /** 현재 광고 데이터를 텍스트로 정리 */
-  _buildContext() {
-    const since = new Date(Date.now() - 6 * 86400000).toISOString().split('T')[0];
-    const until = new Date().toISOString().split('T')[0];
+  /** Tool 실행 */
+  async _executeTool(name, input) {
+    const { getMetaClient, getGoogleClient, getNaverClient } = await import('../utils/clients.js');
+    const today = new Date().toISOString().split('T')[0];
+    const since = input.since || today;
+    const until = input.until || today;
 
-    const campaigns = db.prepare(`
-      SELECT name, platform, status, daily_budget,
-        (SELECT SUM(spend) FROM performance WHERE campaign_id = campaigns.id AND date_start >= ?) as week_spend,
-        (SELECT CASE WHEN SUM(spend)>0 THEN SUM(conversion_value)/SUM(spend) ELSE 0 END FROM performance WHERE campaign_id = campaigns.id AND date_start >= ?) as week_roas
-      FROM campaigns WHERE status = 'ACTIVE' ORDER BY platform, name
-    `).all(since, since);
-
-    const topAds = db.prepare(`
-      SELECT ad_name, campaign_name, platform,
-        SUM(spend) as spend,
-        CASE WHEN SUM(spend)>0 THEN SUM(conversion_value)/SUM(spend) ELSE 0 END as roas,
-        CASE WHEN SUM(impressions)>0 THEN CAST(SUM(clicks) AS REAL)/SUM(impressions)*100 ELSE 0 END as ctr
-      FROM ad_performance
-      WHERE date_start >= ? AND platform = 'meta'
-      GROUP BY ad_id
-      ORDER BY spend DESC LIMIT 10
-    `).all(since);
-
-    const alerts = db.prepare(`SELECT message, created_at FROM alerts ORDER BY created_at DESC LIMIT 5`).all();
-
-    let ctx = `[기간: ${since} ~ ${until}]\n\n`;
-    ctx += `[활성 캠페인 (${campaigns.length}개)]\n`;
-    campaigns.forEach(c => {
-      ctx += `- ${c.platform.toUpperCase()} | ${c.name} | 7일지출: ₩${krwFmt.format(Math.round(c.week_spend || 0))} | 7일ROAS: ${(c.week_roas || 0).toFixed(2)}\n`;
-    });
-
-    ctx += `\n[Meta 소재 성과 상위 10개]\n`;
-    topAds.forEach(a => {
-      ctx += `- ${a.ad_name} | 지출: ₩${krwFmt.format(Math.round(a.spend))} | ROAS: ${a.roas.toFixed(2)} | CTR: ${a.ctr.toFixed(2)}%\n`;
-    });
-
-    if (alerts.length > 0) {
-      ctx += `\n[최근 알림]\n`;
-      alerts.forEach(a => { ctx += `- ${a.message}\n`; });
+    if (name === 'get_overview') {
+      const platform = input.platform;
+      if (platform === 'meta') {
+        const meta = getMetaClient();
+        const rows = await meta.getInsights({ level: 'campaign', timeRange: { since, until } });
+        const t = rows.reduce((a, r) => ({
+          spend: a.spend + r.spend, conversions: a.conversions + r.conversions,
+          value: a.value + r.conversionValue, impressions: a.impressions + r.impressions, clicks: a.clicks + r.clicks,
+        }), { spend: 0, conversions: 0, value: 0, impressions: 0, clicks: 0 });
+        return { platform, since, until, ...t,
+          roas: t.spend > 0 ? t.value / t.spend : 0,
+          cpc: t.clicks > 0 ? t.spend / t.clicks : 0,
+          ctr: t.impressions > 0 ? (t.clicks / t.impressions) * 100 : 0,
+        };
+      }
+      if (platform === 'google') {
+        const google = getGoogleClient();
+        const rows = await google.getPerformance({ dateFrom: since, dateTo: until });
+        const t = rows.reduce((a, r) => ({
+          spend: a.spend + r.spend, conversions: a.conversions + r.conversions,
+          value: a.value + r.conversionValue, impressions: a.impressions + r.impressions, clicks: a.clicks + r.clicks,
+        }), { spend: 0, conversions: 0, value: 0, impressions: 0, clicks: 0 });
+        return { platform, since, until, ...t,
+          roas: t.spend > 0 ? t.value / t.spend : 0,
+        };
+      }
+      if (platform === 'naver') {
+        const naver = getNaverClient();
+        const rows = await naver.getInsights({ dateFrom: since, dateTo: until });
+        const t = rows.reduce((a, r) => ({
+          spend: a.spend + r.spend, conversions: a.conversions + r.conversions,
+          value: a.value + r.conversionValue, impressions: a.impressions + r.impressions, clicks: a.clicks + r.clicks,
+        }), { spend: 0, conversions: 0, value: 0, impressions: 0, clicks: 0 });
+        return { platform, since, until, ...t };
+      }
     }
 
-    return ctx;
+    if (name === 'get_daily_timeline') {
+      const platform = input.platform;
+      if (platform === 'meta') {
+        const meta = getMetaClient();
+        const rows = await meta.getInsights({ level: 'campaign', timeRange: { since, until }, timeIncrement: 1 });
+        const byDate = new Map();
+        for (const r of rows) {
+          const date = r.dateStart || until;
+          if (!byDate.has(date)) byDate.set(date, { spend: 0, conversions: 0, value: 0, impressions: 0, clicks: 0 });
+          const d = byDate.get(date);
+          d.spend += r.spend; d.conversions += r.conversions; d.value += r.conversionValue;
+          d.impressions += r.impressions; d.clicks += r.clicks;
+        }
+        return [...byDate.entries()].sort().map(([date, d]) => ({
+          date, platform, ...d,
+          roas: d.spend > 0 ? d.value / d.spend : 0,
+          cpc:  d.clicks > 0 ? d.spend / d.clicks : 0,
+          ctr:  d.impressions > 0 ? (d.clicks / d.impressions) * 100 : 0,
+        }));
+      }
+      if (platform === 'google') {
+        const google = getGoogleClient();
+        const rows = await google.getPerformance({ dateFrom: since, dateTo: until });
+        const byDate = new Map();
+        for (const r of rows) {
+          const date = r.date || until;
+          if (!byDate.has(date)) byDate.set(date, { spend: 0, conversions: 0, value: 0, impressions: 0, clicks: 0 });
+          const d = byDate.get(date);
+          d.spend += r.spend; d.conversions += r.conversions; d.value += r.conversionValue;
+          d.impressions += r.impressions; d.clicks += r.clicks;
+        }
+        return [...byDate.entries()].sort().map(([date, d]) => ({
+          date, platform, ...d,
+          roas: d.spend > 0 ? d.value / d.spend : 0,
+        }));
+      }
+    }
+
+    if (name === 'get_ad_performance') {
+      const platform = input.platform;
+      const sort = input.sort || 'spend';
+      const nameFilter = input.name_filter ? input.name_filter.toLowerCase() : null;
+
+      if (platform === 'meta') {
+        const meta = getMetaClient();
+        let rows = await meta.getAdInsights({ timeRange: { since, until } });
+        if (nameFilter) rows = rows.filter(r => r.adName?.toLowerCase().includes(nameFilter));
+        rows.sort((a, b) => (b[sort] || 0) - (a[sort] || 0));
+        return rows.slice(0, 30).map(r => ({
+          ad_name: r.adName, campaign_name: r.campaignName,
+          spend: r.spend, roas: r.roas, ctr: r.ctr, cpc: r.cpc,
+          conversions: r.conversions, impressions: r.impressions,
+        }));
+      }
+      if (platform === 'google') {
+        const google = getGoogleClient();
+        let rows = await google.getAdInsights({ dateFrom: since, dateTo: until });
+        if (nameFilter) rows = rows.filter(r => r.adName?.toLowerCase().includes(nameFilter));
+        rows.sort((a, b) => (b[sort] || 0) - (a[sort] || 0));
+        return rows.slice(0, 30).map(r => ({
+          ad_name: r.adName, campaign_name: r.campaignName,
+          spend: r.spend, roas: r.roas, ctr: r.ctr, conversions: r.conversions,
+        }));
+      }
+    }
+
+    if (name === 'get_campaign_performance') {
+      const platform = input.platform;
+      if (platform === 'meta') {
+        const meta = getMetaClient();
+        const rows = await meta.getInsights({ level: 'campaign', timeRange: { since, until } });
+        // campaign 목록과 조인해서 현재 예산도 포함
+        const campaigns = meta._configured ? await meta.getCampaigns(['ACTIVE', 'PAUSED']).catch(() => []) : [];
+        const budgetMap = new Map(campaigns.map(c => [c.id, c.daily_budget ? c.daily_budget : null]));
+        return rows
+          .filter(r => r.impressions > 0)
+          .sort((a, b) => b.spend - a.spend)
+          .map(r => ({
+            campaign_id:    r.campaignId,
+            campaign_name:  r.campaignName,
+            daily_budget:   budgetMap.get(r.campaignId) || null,
+            impressions:    r.impressions,
+            clicks:         r.clicks,
+            spend:          r.spend,
+            conversions:    r.conversions,
+            conversion_value: r.conversionValue,
+            roas:           parseFloat((r.roas || 0).toFixed(2)),
+            ctr:            parseFloat((r.ctr || 0).toFixed(2)),
+            cpc:            parseFloat((r.cpc || 0).toFixed(0)),
+            cpa:            r.conversions > 0 ? parseFloat((r.spend / r.conversions).toFixed(0)) : null,
+          }));
+      }
+      if (platform === 'google') {
+        const google = getGoogleClient();
+        const rows = await google.getPerformance({ dateFrom: since, dateTo: until });
+        const byId = new Map();
+        for (const r of rows) {
+          if (!byId.has(r.campaignId)) {
+            byId.set(r.campaignId, { campaign_id: r.campaignId, campaign_name: r.campaignName, impressions: 0, clicks: 0, spend: 0, conversions: 0, conversionValue: 0 });
+          }
+          const c = byId.get(r.campaignId);
+          c.impressions += r.impressions; c.clicks += r.clicks;
+          c.spend += r.spend; c.conversions += r.conversions; c.conversionValue += r.conversionValue;
+        }
+        return [...byId.values()]
+          .filter(c => c.impressions > 0)
+          .sort((a, b) => b.spend - a.spend)
+          .map(c => ({
+            ...c,
+            roas: parseFloat((c.spend > 0 ? c.conversionValue / c.spend : 0).toFixed(2)),
+            ctr:  parseFloat((c.impressions > 0 ? (c.clicks / c.impressions) * 100 : 0).toFixed(2)),
+            cpa:  c.conversions > 0 ? parseFloat((c.spend / c.conversions).toFixed(0)) : null,
+          }));
+      }
+      return { error: '지원하지 않는 플랫폼입니다.' };
+    }
+
+    if (name === 'update_budget') {
+      const { platform, campaign_id, campaign_name, daily_budget } = input;
+      if (platform === 'meta') {
+        const meta = getMetaClient();
+        await meta.updateCampaign(campaign_id, { dailyBudget: daily_budget });
+        logger.info('Budget updated via chat', { campaign_id, campaign_name, daily_budget });
+        return {
+          success: true,
+          campaign_name,
+          new_daily_budget: daily_budget,
+          message: `${campaign_name} 일일예산이 ₩${daily_budget.toLocaleString()}으로 변경되었습니다.`,
+        };
+      }
+      return { error: '현재 Meta 캠페인만 예산 변경을 지원합니다.' };
+    }
+
+    if (name === 'get_campaigns') {
+      const meta = getMetaClient();
+      const google = getGoogleClient();
+      const [mc, gc] = await Promise.allSettled([
+        meta._configured  ? meta.getCampaigns(['ACTIVE', 'PAUSED'])   : Promise.resolve([]),
+        google._configured ? google.getCampaigns(['ENABLED', 'PAUSED']) : Promise.resolve([]),
+      ]);
+      return [
+        ...(mc.value || []).map(c => ({ platform: 'meta',   campaign_id: c.id, name: c.name, status: c.effective_status || c.status, daily_budget: c.daily_budget || null })),
+        ...(gc.value || []).map(c => ({ platform: 'google', campaign_id: String(c.id || ''), name: c.name, status: c.status, daily_budget: c.dailyBudget || null })),
+      ];
+    }
+
+    return { error: `Unknown tool: ${name}` };
   }
 
   /** Claude API 키 없을 때 기존 키워드 방식 */

@@ -48,7 +48,6 @@ export class Optimizer {
       FROM campaigns c
       LEFT JOIN performance p ON c.id = p.campaign_id
         ${whereClause}
-      WHERE c.status = 'ACTIVE'
       GROUP BY c.id
       ORDER BY total_spend DESC
     `).all(...params);

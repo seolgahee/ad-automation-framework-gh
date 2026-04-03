@@ -142,6 +142,12 @@ export class CopyTemplateEngine {
   }
 
   _seedBuiltIns() {
+    const builtinIds = Object.keys(BUILT_IN_TEMPLATES);
+    const existing = db.prepare(
+      `SELECT COUNT(*) as n FROM copy_templates WHERE is_builtin = 1 AND id IN (${builtinIds.map(() => '?').join(',')})`
+    ).get(...builtinIds).n;
+    if (existing === builtinIds.length) return;
+
     const upsert = db.prepare(`
       INSERT OR REPLACE INTO copy_templates (id, platform, name, headline, description, body_text, cta, variables_json, example_json, is_builtin)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)

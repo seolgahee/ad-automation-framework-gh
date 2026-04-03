@@ -15,7 +15,7 @@ import db, { initDatabase } from './utils/db.js';
 import logger from './utils/logger.js';
 import DataCollector from './analytics/collector.js';
 import { getOptimizer, getPipeline, getTemplateEngine, getABTestEngine, getAudienceManager } from './utils/services.js';
-import { getMetaClient, getGoogleClient } from './utils/clients.js';
+import { getMetaClient, getGoogleClient, getNaverClient } from './utils/clients.js';
 import crypto from 'crypto';
 import path from 'path';
 import { getAdapter } from './utils/platform-adapter.js';
@@ -83,9 +83,16 @@ function validateEnv() {
 }
 const envStatus = validateEnv();
 
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 const app = express();
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
 app.use(express.json({ limit: '50mb' }));
+
+// 대시보드 정적 파일 서빙
+app.use(express.static(path.join(__dirname, 'dashboard')));
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'dashboard', 'index.html')));
 
 const PORT = process.env.API_PORT || 3099;
 const API_TOKEN = process.env.API_AUTH_TOKEN || '';
@@ -245,8 +252,24 @@ const optimizer = getOptimizer();
 
 // ─── REST API: Dashboard Endpoints ───────────────────────────────
 
+// 실시간 API 응답 캐시 (rate limit 방지)
+const _apiCache = new Map();
+function getCache(key) {
+  const entry = _apiCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > entry.ttl) { _apiCache.delete(key); return null; }
+  return entry.data;
+}
+function setCache(key, data, ttlMs = 5 * 60 * 1000) {
+  _apiCache.set(key, { ts: Date.now(), data, ttl: ttlMs });
+}
+
+// 하위 호환 (overview 전용 캐시 → 공통 캐시로 통합)
+const _overviewCache = _apiCache;
+function getCachedOverview(key) { return getCache(key); }
+
 /** GET /api/overview — High-level KPIs */
-app.get('/api/overview', (req, res) => {
+app.get('/api/overview', async (req, res) => {
   const { since, until, platform } = req.query;
   const days = validateDays(req.query.days, 7);
 
@@ -254,85 +277,470 @@ app.get('/api/overview', (req, res) => {
     return res.status(400).json({ error: 'Invalid platform — use "meta", "google", or "tiktok"' });
   }
 
+  const dateFrom = since || new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
+  const dateTo   = until || new Date().toISOString().split('T')[0];
+
+  // 캐시 확인 (실시간 API 호출 플랫폼만)
+  if (platform === 'meta' || platform === 'google' || platform === 'naver') {
+    const cacheKey = `${platform}:${dateFrom}:${dateTo}`;
+    const cached = getCachedOverview(cacheKey);
+    if (cached) return res.json(cached);
+  }
+
+  // ── Google: 실시간 API ───────────────────────────────────────────────
+  if (platform === 'google') {
+    const google = getGoogleClient();
+    if (google._configured) try {
+      const rows = await google.getPerformance({ dateFrom, dateTo });
+      const totals = rows.reduce((acc, r) => ({
+        spend:       acc.spend       + r.spend,
+        conversions: acc.conversions + r.conversions,
+        value:       acc.value       + r.conversionValue,
+        impressions: acc.impressions + r.impressions,
+        clicks:      acc.clicks      + r.clicks,
+      }), { spend: 0, conversions: 0, value: 0, impressions: 0, clicks: 0 });
+
+      const payload = {
+        days,
+        totalSpend:       totals.spend,
+        totalConversions: totals.conversions,
+        totalValue:       totals.value,
+        roas: totals.spend > 0 ? totals.value / totals.spend : 0,
+        cpa:  totals.conversions > 0 ? totals.spend / totals.conversions : 0,
+        cpc:  totals.clicks > 0 ? totals.spend / totals.clicks : 0,
+        ctr:  totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : 0,
+        activeCampaigns: rows.filter(r => r.spend > 0).length,
+        byPlatform: { meta: [], google: rows, tiktok: [] },
+      };
+      setCache(`google:${dateFrom}:${dateTo}`, payload);
+      return res.json(payload);
+    } catch (e) {
+      logger.error('google overview realtime error', { error: e.message });
+      // 오류 시 DB 폴백
+    }
+  }
+
+  // ── Meta: 실시간 API (platform=meta 명시 시에만) ────────────────────
+  if (platform === 'meta') {
+    const meta = getMetaClient();
+    if (meta._configured) try {
+      const rows = await meta.getInsights({ level: 'campaign', timeRange: { since: dateFrom, until: dateTo } });
+      const totals = rows.reduce((acc, r) => ({
+        spend:       acc.spend       + r.spend,
+        conversions: acc.conversions + r.conversions,
+        value:       acc.value       + r.conversionValue,
+        impressions: acc.impressions + r.impressions,
+        clicks:      acc.clicks      + r.clicks,
+      }), { spend: 0, conversions: 0, value: 0, impressions: 0, clicks: 0 });
+
+      const payload = {
+        days,
+        totalSpend:       totals.spend,
+        totalConversions: totals.conversions,
+        totalValue:       totals.value,
+        roas: totals.spend > 0 ? totals.value / totals.spend : 0,
+        cpa:  totals.conversions > 0 ? totals.spend / totals.conversions : 0,
+        cpc:  totals.clicks > 0 ? totals.spend / totals.clicks : 0,
+        ctr:  totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : 0,
+        activeCampaigns: rows.filter(r => r.spend > 0).length,
+        byPlatform: { meta: rows, google: [], tiktok: [] },
+      };
+      setCache(`meta:${dateFrom}:${dateTo}`, payload);
+      return res.json(payload);
+    } catch (e) {
+      logger.error('meta filters realtime error', { error: e.message });
+      // 오류 시 DB 폴백
+    }
+  }
+
+  // ── Naver GFA: 실시간 API ────────────────────────────────────────────
+  if (platform === 'naver') {
+    const naver = getNaverClient();
+    if (naver._configured) try {
+      const rows = await naver.getInsights({ dateFrom, dateTo });
+      const totals = rows.reduce((acc, r) => ({
+        spend:       acc.spend       + r.spend,
+        conversions: acc.conversions + r.conversions,
+        value:       acc.value       + r.conversionValue,
+        impressions: acc.impressions + r.impressions,
+        clicks:      acc.clicks      + r.clicks,
+      }), { spend: 0, conversions: 0, value: 0, impressions: 0, clicks: 0 });
+
+      const payload = {
+        days,
+        totalSpend:       totals.spend,
+        totalConversions: totals.conversions,
+        totalValue:       totals.value,
+        roas: totals.spend > 0 ? totals.value / totals.spend : 0,
+        cpa:  totals.conversions > 0 ? totals.spend / totals.conversions : 0,
+        cpc:  totals.clicks > 0 ? totals.spend / totals.clicks : 0,
+        ctr:  totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : 0,
+        activeCampaigns: rows.filter(r => r.spend > 0).length,
+        byPlatform: { meta: [], google: [], naver: rows, tiktok: [] },
+      };
+      setCache(`naver:${dateFrom}:${dateTo}`, payload);
+      return res.json(payload);
+    } catch (e) {
+      logger.error('naver overview realtime error', { error: e.message });
+    }
+  }
+
+  // ── DB 폴백 (전체 / 미설정 / 오류) ──────────────────────────────────
   const summary = optimizer.getSummary(days, since || null, until || null);
   const filtered = platform ? summary.filter(c => c.platform === platform) : summary;
 
   const totals = filtered.reduce((acc, c) => ({
-    spend: acc.spend + (c.total_spend || 0),
+    spend:       acc.spend       + (c.total_spend || 0),
     conversions: acc.conversions + (c.total_conversions || 0),
-    value: acc.value + (c.total_value || 0),
+    value:       acc.value       + (c.total_value || 0),
     impressions: acc.impressions + (c.total_impressions || 0),
-    clicks: acc.clicks + (c.total_clicks || 0),
+    clicks:      acc.clicks      + (c.total_clicks || 0),
   }), { spend: 0, conversions: 0, value: 0, impressions: 0, clicks: 0 });
 
   res.json({
     days,
-    totalSpend: totals.spend,
+    totalSpend:       totals.spend,
     totalConversions: totals.conversions,
-    totalValue: totals.value,
+    totalValue:       totals.value,
     roas: totals.spend > 0 ? totals.value / totals.spend : 0,
-    cpa: totals.conversions > 0 ? totals.spend / totals.conversions : 0,
-    cpc: totals.clicks > 0 ? totals.spend / totals.clicks : 0,
-    ctr: totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : 0,
+    cpa:  totals.conversions > 0 ? totals.spend / totals.conversions : 0,
+    cpc:  totals.clicks > 0 ? totals.spend / totals.clicks : 0,
+    ctr:  totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : 0,
     activeCampaigns: filtered.filter(c => c.total_spend > 0).length,
     byPlatform: {
-      meta: summary.filter(c => c.platform === 'meta'),
+      meta:   summary.filter(c => c.platform === 'meta'),
       google: summary.filter(c => c.platform === 'google'),
       tiktok: summary.filter(c => c.platform === 'tiktok'),
     },
   });
 });
 
-/** GET /api/campaigns — All campaigns with latest performance */
-app.get('/api/campaigns', (req, res) => {
-  const campaigns = db.prepare(`
-    SELECT c.*,
-      (SELECT SUM(p.spend) FROM performance p WHERE p.campaign_id = c.id AND p.date_start >= date('now', '-7 days')) as today_spend,
-      (SELECT SUM(p.conversions) FROM performance p WHERE p.campaign_id = c.id AND p.date_start >= date('now', '-7 days')) as today_conversions,
-      (SELECT CASE WHEN SUM(p.spend) > 0 THEN SUM(p.conversion_value) / SUM(p.spend) ELSE 0 END FROM performance p WHERE p.campaign_id = c.id AND p.date_start >= date('now', '-7 days')) as week_roas
-    FROM campaigns c
-    WHERE c.status = 'ACTIVE'
-      AND (c.stop_time IS NULL OR c.stop_time > datetime('now'))
-    ORDER BY c.platform, c.name
-  `).all();
-  res.json(campaigns);
+/** GET /api/campaign-daily — 기간별 캠페인 성과 집계 (노출량 > 0) */
+app.get('/api/campaign-daily', async (req, res) => {
+  const { since, until, platform = 'meta' } = req.query;
+  if (!since || !until) return res.status(400).json({ error: 'since and until required (YYYY-MM-DD)' });
+
+  const cacheKey = `campaign-daily:${platform}:${since}:${until}`;
+  const cached = getCache(cacheKey);
+  if (cached) return res.json(cached);
+
+  try {
+    let rows = [];
+
+    if (platform === 'meta') {
+      const meta = getMetaClient();
+      if (!meta._configured) return res.json([]);
+      rows = await meta.getInsights({ level: 'campaign', timeRange: { since, until } });
+    } else if (platform === 'google') {
+      const google = getGoogleClient();
+      if (!google._configured) return res.json([]);
+      rows = await google.getPerformance({ dateFrom: since, dateTo: until });
+    } else {
+      return res.json([]);
+    }
+
+    // 캠페인별 집계 (기간 내 여러 날 데이터 합산)
+    const byId = new Map();
+    for (const r of rows) {
+      if (r.impressions === 0) continue;
+      if (!byId.has(r.campaignId)) {
+        byId.set(r.campaignId, {
+          campaignId:      r.campaignId,
+          campaignName:    r.campaignName,
+          impressions:     0,
+          clicks:          0,
+          spend:           0,
+          conversions:     0,
+          conversionValue: 0,
+        });
+      }
+      const c = byId.get(r.campaignId);
+      c.impressions     += r.impressions;
+      c.clicks          += r.clicks;
+      c.spend           += r.spend;
+      c.conversions     += r.conversions;
+      c.conversionValue += r.conversionValue;
+    }
+
+    const result = [...byId.values()]
+      .map(c => ({
+        ...c,
+        ctr:  c.impressions > 0 ? (c.clicks / c.impressions) * 100 : 0,
+        cpc:  c.clicks > 0 ? c.spend / c.clicks : 0,
+        roas: c.spend > 0 ? c.conversionValue / c.spend : 0,
+        cpa:  c.conversions > 0 ? c.spend / c.conversions : 0,
+      }))
+      .sort((a, b) => b.spend - a.spend);
+
+    setCache(cacheKey, result, 5 * 60 * 1000);
+    return res.json(result);
+  } catch (e) {
+    logger.error('campaign-daily error', { error: e.message });
+    return res.status(500).json({ error: e.message });
+  }
 });
 
-/** GET /api/performance/timeline — Time series data for charts (CRITICAL #1 FIX) */
-app.get('/api/performance/timeline', (req, res) => {
+/** GET /api/insights/creative — Rule-based TOP3 선별 + Claude 한줄 코멘트 */
+app.get('/api/insights/creative', async (req, res) => {
+  const cacheKey = 'insights:creative';
+  const cached = getCache(cacheKey);
+  if (cached) return res.json(cached);
+
+  try {
+    const meta = getMetaClient();
+    if (!meta._configured) return res.json({ surge: [], highPerf: [], waste: [], highCpa: [] });
+
+    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    const d7  = new Date(Date.now() -  7 * 86400000).toISOString().split('T')[0];
+    const d8  = new Date(Date.now() -  8 * 86400000).toISOString().split('T')[0];
+    const d14 = new Date(Date.now() - 14 * 86400000).toISOString().split('T')[0];
+
+    // 현재 7일 + 이전 7일 병렬 조회
+    const [current, previous] = await Promise.all([
+      meta.getAdInsights({ timeRange: { since: d7,  until: yesterday } }),
+      meta.getAdInsights({ timeRange: { since: d14, until: d8 } }),
+    ]);
+
+    // ── 카드 #1: 노출·클릭 급증 ───────────────────────────────
+    const prevMap = new Map(previous.map(r => [r.adId, r]));
+    const surge = current
+      .map(r => {
+        const prev = prevMap.get(r.adId);
+        const prevScore = prev ? (prev.impressions + prev.clicks) : 0;
+        const currScore = r.impressions + r.clicks;
+        const growthRate = prevScore > 0 ? currScore / prevScore : (currScore > 0 ? 99 : 0);
+        return { ...r, growthRate, currScore };
+      })
+      .filter(r => r.currScore > 0)
+      .sort((a, b) => b.growthRate - a.growthRate)
+      .slice(0, 3);
+
+    // ── 카드 #2: 고성과 (ROAS >= 2.0 & 전환 >= 5) ────────────
+    const highPerf = current
+      .filter(r => r.roas >= 2.0 && r.conversions >= 5)
+      .sort((a, b) => b.spend - a.spend)
+      .slice(0, 3);
+
+    // ── 카드 #3: 낭비 소재 (지출 >= 10만 & 전환 0) ───────────
+    const waste = current
+      .filter(r => r.spend >= 100000 && r.conversions === 0)
+      .sort((a, b) => b.spend - a.spend)
+      .slice(0, 3);
+
+    // ── 카드 #4: 고CPA (전환 > 0 & CPA >= 15만) ──────────────
+    const highCpa = current
+      .filter(r => r.conversions > 0 && r.cpa >= 150000)
+      .sort((a, b) => b.cpa - a.cpa)
+      .slice(0, 3);
+
+    // ── Claude 한줄 코멘트 생성 ───────────────────────────────
+    const allItems = [
+      ...surge.map(r => ({ ...r, category: 'surge' })),
+      ...highPerf.map(r => ({ ...r, category: 'highPerf' })),
+      ...waste.map(r => ({ ...r, category: 'waste' })),
+      ...highCpa.map(r => ({ ...r, category: 'highCpa' })),
+    ];
+
+    let comments = {};
+    if (allItems.length > 0 && process.env.ANTHROPIC_API_KEY) {
+      try {
+        const Anthropic = (await import('@anthropic-ai/sdk')).default;
+        const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+        const payload = allItems.map(r => ({
+          id: r.adId,
+          name: r.adName,
+          category: r.category,
+          spend: Math.round(r.spend),
+          roas: parseFloat((r.roas || 0).toFixed(2)),
+          conversions: r.conversions,
+          cpa: Math.round(r.cpa || 0),
+          impressions: r.impressions,
+          clicks: r.clicks,
+          ctr: parseFloat((r.ctr || 0).toFixed(2)),
+          growthRate: r.growthRate ? parseFloat(r.growthRate.toFixed(1)) : null,
+        }));
+
+        const response = await anthropic.messages.create({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 1024,
+          messages: [{
+            role: 'user',
+            content: `광고 소재 성과 데이터를 분석해 각 소재에 한국어 한줄 인사이트를 생성하세요.
+카테고리: surge=노출·클릭 급증, highPerf=고성과, waste=전환없는 낭비, highCpa=고CPA
+
+JSON 배열만 반환하세요 (다른 텍스트 없이):
+[{"id":"소재ID","comment":"한줄 인사이트 (20자 이내)"}]
+
+데이터:
+${JSON.stringify(payload)}`,
+          }],
+        });
+
+        const text = response.content[0]?.text || '[]';
+        const match = text.match(/\[[\s\S]*\]/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          comments = Object.fromEntries(parsed.map(c => [c.id, c.comment]));
+        }
+      } catch (e) {
+        logger.warn('Claude insight comment generation failed', { error: e.message });
+      }
+    }
+
+    const withComment = (list) => list.map(r => ({ ...r, comment: comments[r.adId] || null }));
+
+    const result = {
+      surge:    withComment(surge),
+      highPerf: withComment(highPerf),
+      waste:    withComment(waste),
+      highCpa:  withComment(highCpa),
+      generatedAt: new Date().toISOString(),
+    };
+
+    setCache(cacheKey, result, 30 * 60 * 1000); // 30분 캐시
+    return res.json(result);
+  } catch (e) {
+    logger.error('insights/creative error', { error: e.message });
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+/** GET /api/campaigns — All campaigns (실시간 API, 5분 캐시) */
+app.get('/api/campaigns', async (req, res) => {
+  const cacheKey = 'campaigns:all';
+  const cached = getCache(cacheKey);
+  if (cached) return res.json(cached);
+
+  try {
+    const [meta, google, naver] = [getMetaClient(), getGoogleClient(), getNaverClient()];
+    const results = await Promise.allSettled([
+      meta._configured   ? meta.getCampaigns(['ACTIVE', 'PAUSED'])   : Promise.resolve([]),
+      google._configured ? google.getCampaigns(['ENABLED', 'PAUSED']) : Promise.resolve([]),
+      naver._configured  ? naver.getCampaigns()                       : Promise.resolve([]),
+    ]);
+
+    const metaCampaigns = (results[0].value || []).map(c => ({
+      id: `meta_${c.id}`, platform: 'meta', platform_id: c.id,
+      name: c.name, status: c.effective_status || c.status,
+      daily_budget: c.daily_budget ? c.daily_budget : null,
+      stop_time: c.stop_time || null,
+      week_roas: null, today_spend: null, today_conversions: null,
+    }));
+
+    const googleCampaigns = (results[1].value || []).map(c => ({
+      id: `google_${c.id}`, platform: 'google', platform_id: c.id,
+      name: c.name, status: c.status,
+      daily_budget: c.dailyBudget || null,
+      stop_time: null,
+      week_roas: null, today_spend: null, today_conversions: null,
+    }));
+
+    const naverCampaigns = (results[2].value || []).map(c => ({
+      id: `naver_${c.id}`, platform: 'naver', platform_id: c.id,
+      name: c.name, status: c.status,
+      daily_budget: c.dailyBudget || null,
+      stop_time: null,
+      week_roas: null, today_spend: null, today_conversions: null,
+    }));
+
+    const payload = [...metaCampaigns, ...googleCampaigns, ...naverCampaigns]
+      .sort((a, b) => a.platform.localeCompare(b.platform) || a.name.localeCompare(b.name));
+
+    setCache(cacheKey, payload, 5 * 60 * 1000);
+    res.json(payload);
+  } catch (e) {
+    safeError(res, e, 'campaigns');
+  }
+});
+
+/** GET /api/performance/timeline — 일별 시계열 (실시간 API, 5분 캐시) */
+app.get('/api/performance/timeline', async (req, res) => {
   const { since, until } = req.query;
   const days = validateDays(req.query.days, 14);
   const platform = req.query.platform;
 
   if (platform && !validatePlatform(platform)) {
-    return res.status(400).json({ error: 'Invalid platform — use "meta", "google", or "tiktok"' });
+    return res.status(400).json({ error: 'Invalid platform' });
   }
 
-  let query = `
-    SELECT
-      date_start as date,
-      platform,
-      SUM(impressions) as impressions,
-      SUM(clicks) as clicks,
-      SUM(spend) as spend,
-      SUM(conversions) as conversions,
-      SUM(conversion_value) as value,
-      CASE WHEN SUM(impressions) > 0 THEN CAST(SUM(clicks) AS REAL) / SUM(impressions) ELSE 0 END as ctr,
-      CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
-      CASE WHEN SUM(spend) > 0 THEN SUM(conversion_value) / SUM(spend) ELSE 0 END as roas
-    FROM performance
-    WHERE ${since && until ? `date_start >= ? AND date_start <= ?` : `date_start >= date('now', ? || ' days')`}
-  `;
-  const params = since && until ? [since, until] : [`-${days}`];
+  const dateFrom = since || new Date(Date.now() - (days - 1) * 86400000).toISOString().split('T')[0];
+  const dateTo   = until || new Date().toISOString().split('T')[0];
+  const cacheKey = `timeline:${platform || 'all'}:${dateFrom}:${dateTo}`;
+  const cached = getCache(cacheKey);
+  if (cached) return res.json(cached);
 
-  if (platform) {
-    query += ` AND platform = ?`;
-    params.push(platform);
+  try {
+    const [meta, google] = [getMetaClient(), getGoogleClient()];
+    const rows = [];
+
+    if (!platform || platform === 'meta') {
+      if (meta._configured) {
+        const insights = await meta.getInsights({
+          level: 'campaign',
+          timeRange: { since: dateFrom, until: dateTo },
+          timeIncrement: 1,
+        }).catch(() => []);
+        // date_start별로 집계
+        const byDate = new Map();
+        for (const r of insights) {
+          const date = r.dateStart || dateTo;
+          if (!byDate.has(date)) byDate.set(date, { impressions: 0, clicks: 0, spend: 0, conversions: 0, value: 0 });
+          const d = byDate.get(date);
+          d.impressions += r.impressions; d.clicks += r.clicks; d.spend += r.spend;
+          d.conversions += r.conversions; d.value += r.conversionValue;
+        }
+        for (const [date, d] of byDate) {
+          rows.push({ date, platform: 'meta', ...d,
+            ctr:  d.impressions > 0 ? d.clicks / d.impressions : 0,
+            cpc:  d.clicks > 0 ? d.spend / d.clicks : 0,
+            roas: d.spend > 0 ? d.value / d.spend : 0,
+          });
+        }
+      }
+    }
+
+    if (!platform || platform === 'google') {
+      if (google._configured) {
+        const gRows = await google.getPerformance({ dateFrom, dateTo }).catch(() => []);
+        const byDate = new Map();
+        for (const r of gRows) {
+          const date = r.date || dateTo;
+          if (!byDate.has(date)) byDate.set(date, { impressions: 0, clicks: 0, spend: 0, conversions: 0, value: 0 });
+          const d = byDate.get(date);
+          d.impressions += r.impressions; d.clicks += r.clicks; d.spend += r.spend;
+          d.conversions += r.conversions; d.value += r.conversionValue;
+        }
+        for (const [date, d] of byDate) {
+          rows.push({ date, platform: 'google', ...d,
+            ctr:  d.impressions > 0 ? d.clicks / d.impressions : 0,
+            cpc:  d.clicks > 0 ? d.spend / d.clicks : 0,
+            roas: d.spend > 0 ? d.value / d.spend : 0,
+          });
+        }
+      }
+    }
+
+    if (!platform || platform === 'naver') {
+      const naver = getNaverClient();
+      if (naver._configured) {
+        const nRows = await naver.getInsights({ dateFrom, dateTo }).catch(() => []);
+        for (const r of nRows) {
+          rows.push({ date: r.dateStart || dateTo, platform: 'naver',
+            impressions: r.impressions, clicks: r.clicks, spend: r.spend,
+            conversions: r.conversions, value: r.conversionValue,
+            ctr: r.ctr, cpc: r.cpc, roas: r.roas,
+          });
+        }
+      }
+    }
+
+    rows.sort((a, b) => a.date.localeCompare(b.date) || a.platform.localeCompare(b.platform));
+    setCache(cacheKey, rows, 5 * 60 * 1000);
+    res.json(rows);
+  } catch (e) {
+    safeError(res, e, 'timeline');
   }
-  query += ` GROUP BY date_start, platform ORDER BY date_start`;
-
-  const rows = db.prepare(query).all(...params);
-  res.json(rows);
 });
 
 /** GET /api/alerts — Recent alerts */
@@ -544,6 +952,30 @@ app.post('/api/meta/upload-image', upload.single('image'), async (req, res) => {
     if (!hash) throw new Error('Meta 이미지 업로드 실패');
 
     logger.info('Image uploaded to Meta via drag-drop', { hash, size: req.file.size });
+
+    // library_id가 전달된 경우 platform_asset_map에 저장
+    const { library_id } = req.body;
+    if (library_id && hash) {
+      try {
+        db.prepare(`
+          INSERT OR REPLACE INTO platform_asset_map (library_id, platform, external_asset_id, asset_type, status)
+          VALUES (?, 'meta', ?, 'image_hash', 'success')
+        `).run(library_id, hash);
+        db.prepare(`
+          UPDATE creative_library
+          SET meta_uploaded = 1,
+              processing_status = CASE WHEN processing_status = 'new' THEN 'uploaded_to_meta' ELSE processing_status END,
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).run(library_id);
+        db.prepare(`INSERT INTO job_log (job_type, library_id, status, message) VALUES ('meta_upload', ?, 'success', ?)`)
+          .run(library_id, `image_hash=${hash}`);
+        logger.info('Saved image_hash to platform_asset_map', { library_id, hash });
+      } catch (mapErr) {
+        logger.warn('Failed to save to platform_asset_map', { error: mapErr.message });
+      }
+    }
+
     res.json({ hash, url, filename: req.file.originalname, size: req.file.size });
   } catch (e) {
     safeError(res, e, 'Meta upload-image');
@@ -816,6 +1248,243 @@ app.get('/api/creative-library/image/:id', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/creative-library/meta-winners?days=7
+ * creative_library에 ad_id가 연결된 모든 소재의 ROAS를 ad_performance DB에서 계산
+ * platform_asset_map 등록 여부와 무관하게 과거/신규 소재 모두 포함
+ */
+app.get('/api/creative-library/meta-winners', (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(parseInt(req.query.days) || 7, 90));
+    const roasThreshold = parseFloat(req.query.threshold || '1.0');
+    const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+    const until = new Date().toISOString().slice(0, 10);
+
+    // creative_library 전체 (ad_id 있는 것) + ad_performance 기간 합산 ROAS
+    const items = db.prepare(`
+      SELECT
+        cl.id as library_id,
+        cl.name,
+        cl.width,
+        cl.height,
+        cl.persona,
+        cl.desire,
+        cl.awareness,
+        cl.ad_id,
+        COALESCE(SUM(ap.spend), 0) as spend,
+        COALESCE(SUM(ap.conversion_value), 0) as conv_value,
+        CASE WHEN COALESCE(SUM(ap.spend), 0) > 0
+          THEN COALESCE(SUM(ap.conversion_value), 0) / SUM(ap.spend)
+          ELSE 0 END as roas,
+        COALESCE(SUM(ap.conversions), 0) as conversions,
+        MAX(ap.ad_name) as ad_name
+      FROM creative_library cl
+      LEFT JOIN ad_performance ap
+        ON cl.ad_id = ap.ad_id
+        AND ap.platform = 'meta'
+        AND ap.date_start >= ?
+        AND ap.date_start <= ?
+      WHERE cl.ad_id IS NOT NULL
+      GROUP BY cl.id
+      ORDER BY roas DESC
+    `).all(since, until);
+
+    const googleMapStmt = db.prepare(
+      `SELECT id FROM platform_asset_map WHERE library_id = ? AND platform = 'google'`
+    );
+
+    const winners = items.map(item => ({
+      library_id: item.library_id,
+      name: item.name,
+      width: item.width,
+      height: item.height,
+      persona: item.persona,
+      desire: item.desire,
+      awareness: item.awareness,
+      ad_id: item.ad_id,
+      ad_name: item.ad_name,
+      roas: parseFloat(item.roas).toFixed(2),
+      spend: Math.round(item.spend),
+      conversions: item.conversions,
+      is_winner: item.roas >= roasThreshold,
+      google_pushed: !!googleMapStmt.get(item.library_id),
+    }));
+
+    res.json({ winners, threshold: roasThreshold, days, since, until, total: winners.length });
+  } catch (e) {
+    safeError(res, e, 'meta-winners');
+  }
+});
+
+/**
+ * POST /api/creative-library/sync-meta-hashes
+ * creative_library의 ad_id로 Meta API에서 image_hash를 역조회해 platform_asset_map에 저장
+ */
+app.post('/api/creative-library/sync-meta-hashes', async (req, res) => {
+  try {
+    const meta = getMetaClient();
+    if (!meta._configured) return res.status(503).json({ error: 'Meta API not configured' });
+
+    // ad_id가 있는 creative_library 전체 조회 (고유 ad_id만)
+    const items = db.prepare(`
+      SELECT id as library_id, ad_id
+      FROM creative_library
+      WHERE ad_id IS NOT NULL
+    `).all();
+
+    if (items.length === 0) return res.json({ saved: 0, message: 'ad_id 연결된 소재 없음' });
+
+    // 고유 ad_id 목록으로 Meta API 일괄 조회
+    const uniqueAdIds = [...new Set(items.map(i => i.ad_id))];
+    const hashMap = await meta.getAdImageHashes(uniqueAdIds);
+
+    // platform_asset_map에 저장 (이미 있으면 skip)
+    const insertStmt = db.prepare(`
+      INSERT OR IGNORE INTO platform_asset_map (library_id, platform, external_asset_id, asset_type, status)
+      VALUES (?, 'meta', ?, 'image_hash', 'success')
+    `);
+    const updateLibStmt = db.prepare(`
+      UPDATE creative_library
+      SET meta_uploaded = 1,
+          processing_status = CASE WHEN processing_status = 'new' THEN 'uploaded_to_meta' ELSE processing_status END,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `);
+    const logStmt = db.prepare(`
+      INSERT INTO job_log (job_type, library_id, status, message) VALUES ('sync_meta_hash', ?, 'success', ?)
+    `);
+
+    let saved = 0;
+    let skipped = 0;
+    const details = [];
+
+    const syncAll = db.transaction(() => {
+      for (const item of items) {
+        const hash = hashMap.get(item.ad_id);
+        if (!hash) { skipped++; continue; }
+        const info = insertStmt.run(item.library_id, hash);
+        if (info.changes > 0) {
+          updateLibStmt.run(item.library_id);
+          logStmt.run(item.library_id, `image_hash=${hash}`);
+          saved++;
+          details.push({ library_id: item.library_id, ad_id: item.ad_id, hash });
+        } else {
+          // 이미 platform_asset_map에 있어도 creative_library 상태는 갱신
+          updateLibStmt.run(item.library_id);
+          skipped++;
+        }
+      }
+    });
+    syncAll();
+
+    logger.info('sync-meta-hashes complete', { saved, skipped });
+    res.json({ success: true, saved, skipped, total: items.length, details });
+  } catch (e) {
+    safeError(res, e, 'sync-meta-hashes');
+  }
+});
+
+/**
+ * POST /api/meta/refresh-image-urls
+ * ad_performance.image_url을 Meta API에서 고해상도 permalink_url로 업데이트
+ */
+app.post('/api/meta/refresh-image-urls', async (req, res) => {
+  try {
+    const meta = getMetaClient();
+    if (!meta._configured) return res.status(503).json({ error: 'Meta API not configured' });
+
+    // 고유 ad_id 목록 수집 (Meta 플랫폼만)
+    const rows = db.prepare(
+      `SELECT DISTINCT ad_id FROM ad_performance WHERE platform = 'meta' AND ad_id IS NOT NULL`
+    ).all();
+    const adIds = rows.map(r => r.ad_id);
+    if (adIds.length === 0) return res.json({ success: true, updated: 0, total: 0 });
+
+    logger.info(`refresh-image-urls: fetching ${adIds.length} ad images from Meta API`);
+    const imageMap = await meta.getAdCreativeImages(adIds);
+
+    const updateStmt = db.prepare(
+      `UPDATE ad_performance SET image_url = ? WHERE ad_id = ? AND platform = 'meta'`
+    );
+    let updated = 0;
+    const updateAll = db.transaction(() => {
+      for (const [adId, url] of imageMap) {
+        if (url) {
+          updateStmt.run(url, adId);
+          updated++;
+        }
+      }
+    });
+    updateAll();
+
+    // 로컬 캐시 파일 삭제 (다음 요청 시 새 URL로 재다운로드)
+    try {
+      const files = fs.readdirSync(CREATIVE_IMAGE_DIR);
+      for (const f of files) fs.unlinkSync(path.join(CREATIVE_IMAGE_DIR, f));
+    } catch (_) {}
+
+    logger.info(`refresh-image-urls complete`, { updated, total: adIds.length });
+    res.json({ success: true, updated, total: adIds.length });
+  } catch (e) {
+    safeError(res, e, 'refresh-image-urls');
+  }
+});
+
+/**
+ * POST /api/creative-library/:id/push-to-google
+ * creative_library 소재를 Google PMAX 에셋 그룹에 업로드
+ * body: { assetGroupId, fieldType }
+ */
+app.post('/api/creative-library/:id/push-to-google', async (req, res) => {
+  const { id } = req.params;
+  const { assetGroupId, fieldType = 'MARKETING_IMAGE' } = req.body;
+  if (!assetGroupId) return res.status(400).json({ error: 'assetGroupId required' });
+
+  const row = db.prepare(`SELECT id, name, image_data, width, height FROM creative_library WHERE id = ?`).get(id);
+  if (!row?.image_data) return res.status(404).json({ error: 'Creative not found' });
+
+  try {
+    const google = getGoogleClient();
+
+    // Sharp로 리사이즈 (PMAX 스펙에 맞게)
+    const rawBuffer = Buffer.from(row.image_data);
+    const outputBuffer = PMAX_IMAGE_SPECS[fieldType]
+      ? await resizeForPmax(rawBuffer, fieldType)
+      : rawBuffer;
+
+    const base64 = outputBuffer.toString('base64');
+    const result = await google.addAssetsToAssetGroup(assetGroupId, [{
+      base64,
+      fieldType,
+      name: row.name,
+    }]);
+
+    // platform_asset_map에 저장
+    db.prepare(`
+      INSERT OR REPLACE INTO platform_asset_map (library_id, platform, external_asset_id, asset_type, status)
+      VALUES (?, 'google', ?, ?, 'success')
+    `).run(id, `${assetGroupId}_${fieldType}_${id}`, fieldType);
+
+    db.prepare(`INSERT INTO job_log (job_type, library_id, status, message) VALUES ('google_pmax_push', ?, 'success', ?)`)
+      .run(id, `assetGroupId=${assetGroupId}, fieldType=${fieldType}`);
+
+    db.prepare(`
+      UPDATE creative_library
+      SET google_uploaded = 1,
+          processing_status = 'uploaded_to_google',
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(id);
+
+    logger.info('Pushed creative to Google PMAX', { id, assetGroupId, fieldType });
+    res.json({ success: true, result });
+  } catch (e) {
+    db.prepare(`INSERT INTO job_log (job_type, library_id, status, message) VALUES ('google_pmax_push', ?, 'error', ?)`)
+      .run(id, e.message);
+    safeError(res, e, 'push-to-google');
+  }
+});
+
 /** GET /api/meta/ad-list — 라이브러리 매핑용 Meta 광고 목록 (ad_id + ad_name 중복제거) */
 app.get('/api/meta/ad-list', (req, res) => {
   const rows = db.prepare(`
@@ -869,8 +1538,8 @@ app.get('/api/meta/top-creatives', async (req, res) => {
       const lib = db.prepare(`SELECT image_data FROM creative_library WHERE id = ?`).get(row.library_id);
       if (!lib?.image_data) return row;
       const thumb = await sharp(Buffer.from(lib.image_data))
-        .resize(600, 600, { fit: 'cover', position: 'centre' })
-        .jpeg({ quality: 70 })
+        .resize(800, 800, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 90 })
         .toBuffer();
       return { ...row, library_thumb: `data:image/jpeg;base64,${thumb.toString('base64')}` };
     } catch { return row; }
@@ -881,15 +1550,59 @@ app.get('/api/meta/top-creatives', async (req, res) => {
 
 /**
  * GET /api/meta/creative-thumbnail/:adId
- * 로컬 캐시 이미지를 이진 파일로 직접 서빙 (인증 불필요 — <img src> 태그용)
- * 로컬 없으면 404 (CDN fallback 없음 — 보안상 외부 URL 미노출)
+ * 1) creative_library BLOB 우선
+ * 2) 로컬 캐시
+ * 3) Meta CDN URL 프록시 (stp 파라미터 제거해서 원본 품질로 다운로드 + 캐시)
  */
-app.get('/api/meta/creative-thumbnail/:adId', (req, res) => {
-  const localPath = path.join(CREATIVE_IMAGE_DIR, `${req.params.adId}.jpg`);
-  if (!fs.existsSync(localPath)) return res.status(404).end();
-  res.setHeader('Content-Type', 'image/jpeg');
-  res.setHeader('Cache-Control', 'public, max-age=86400');
-  fs.createReadStream(localPath).pipe(res);
+app.get('/api/meta/creative-thumbnail/:adId', async (req, res) => {
+  const { adId } = req.params;
+  const localPath = path.join(CREATIVE_IMAGE_DIR, `${adId}.jpg`);
+
+  // 1) creative_library BLOB
+  const libRow = db.prepare(
+    `SELECT image_data, mime_type FROM creative_library WHERE ad_id = ? AND image_data IS NOT NULL ORDER BY created_at DESC LIMIT 1`
+  ).get(adId);
+  if (libRow?.image_data) {
+    res.setHeader('Content-Type', libRow.mime_type || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.send(Buffer.from(libRow.image_data));
+  }
+
+  // 2) 로컬 캐시
+  if (fs.existsSync(localPath)) {
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return fs.createReadStream(localPath).pipe(res);
+  }
+
+  // 3) Meta CDN 프록시 (stp 파라미터 제거 → 원본 품질)
+  const urlRow = db.prepare(
+    `SELECT image_url FROM ad_performance WHERE ad_id = ? AND image_url IS NOT NULL LIMIT 1`
+  ).get(adId);
+  if (!urlRow?.image_url) return res.status(404).end();
+
+  try {
+    // stp 파라미터(썸네일 변환) 제거
+    const url = new URL(urlRow.image_url);
+    url.searchParams.delete('stp');
+    const response = await fetch(url.toString(), { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) return res.status(502).end();
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+
+    // 로컬 캐시 저장
+    try {
+      fs.mkdirSync(CREATIVE_IMAGE_DIR, { recursive: true });
+      fs.writeFileSync(localPath, buffer);
+    } catch (_) {}
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(buffer);
+  } catch (e) {
+    res.status(502).end();
+  }
 });
 
 /**
@@ -932,7 +1645,9 @@ app.get('/api/meta/creative-image/:adId', async (req, res) => {
     }
 
     try {
-      const response = await fetch(row.image_url, { signal: AbortSignal.timeout(15000) });
+      // stp 파라미터(썸네일 처리) 제거해서 원본 품질로 다운로드
+      const cleanUrl = row.image_url.replace(/[?&]stp=[^&]+/, m => m.startsWith('?') ? '?' : '');
+      const response = await fetch(cleanUrl, { signal: AbortSignal.timeout(15000) });
       if (!response.ok) throw new Error(`이미지 다운로드 실패 (HTTP ${response.status})`);
       rawBuffer = Buffer.from(await response.arrayBuffer());
 
@@ -1355,6 +2070,32 @@ app.post('/api/audiences/apply', async (req, res) => {
 
 // ─── Ad Performance (Creative-level) ─────────────────────────────
 
+/** 소재 라이브러리 enrichment 헬퍼 (PDA 태그 + 썸네일) */
+async function enrichWithLibrary(rows) {
+  const libStmt = db.prepare(`
+    SELECT id, persona, desire, awareness, image_data
+    FROM creative_library
+    WHERE ad_id = ?
+    ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC
+    LIMIT 1
+  `);
+  return Promise.all(rows.map(async row => {
+    const lib = libStmt.get(row.ad_id);
+    if (!lib) return row;
+    const enriched = { ...row, library_id: lib.id, persona: lib.persona, desire: lib.desire, awareness: lib.awareness };
+    if (lib.image_data) {
+      try {
+        const thumb = await sharp(Buffer.from(lib.image_data))
+          .resize(600, 600, { fit: 'cover', position: 'centre' })
+          .jpeg({ quality: 70 })
+          .toBuffer();
+        enriched.library_thumb = `data:image/jpeg;base64,${thumb.toString('base64')}`;
+      } catch {}
+    }
+    return enriched;
+  }));
+}
+
 /** GET /api/ad-performance — Ad-level performance data for Creatives gallery */
 app.get('/api/ad-performance', async (req, res) => {
   const { platform, sort, order, since, until } = req.query;
@@ -1364,81 +2105,95 @@ app.get('/api/ad-performance', async (req, res) => {
     return res.status(400).json({ error: 'Invalid platform' });
   }
 
-  const allowedSorts = ['spend', 'roas', 'ctr', 'impressions', 'clicks', 'cpa', 'cpc', 'conversions', 'date_start'];
-  const sortCol = allowedSorts.includes(sort) ? sort : 'spend';
-  const sortOrder = order === 'asc' ? 'ASC' : 'DESC';
+  // ── Meta: 실시간 API 조회 + creative_library 연동 (5분 캐시) ────────
+  if (platform === 'meta') {
+    const meta = getMetaClient();
+    if (meta._configured) try {
+      const dateFrom = since || new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
+      const dateTo   = until || new Date().toISOString().split('T')[0];
+      const cacheKey = `adperf:meta:${dateFrom}:${dateTo}`;
 
-  let query = `
-    SELECT
-      ap.ad_id, ap.ad_name, ap.adset_id, ap.adset_name, ap.campaign_id, ap.campaign_name,
-      ap.platform, ap.date_start,
-      SUM(ap.impressions) as impressions,
-      SUM(ap.clicks) as clicks,
-      SUM(ap.spend) as spend,
-      SUM(ap.conversions) as conversions,
-      SUM(ap.conversion_value) as conversion_value,
-      CASE WHEN SUM(ap.impressions) > 0 THEN CAST(SUM(ap.clicks) AS REAL) / SUM(ap.impressions) * 100 ELSE 0 END as ctr,
-      CASE WHEN SUM(ap.clicks) > 0 THEN SUM(ap.spend) / SUM(ap.clicks) ELSE 0 END as cpc,
-      CASE WHEN SUM(ap.impressions) > 0 THEN SUM(ap.spend) / SUM(ap.impressions) * 1000 ELSE 0 END as cpm,
-      CASE WHEN SUM(ap.spend) > 0 THEN SUM(ap.conversion_value) / SUM(ap.spend) ELSE 0 END as roas,
-      CASE WHEN SUM(ap.conversions) > 0 THEN SUM(ap.spend) / SUM(ap.conversions) ELSE 0 END as cpa,
-      MAX(ap.collected_at) as collected_at,
-      MAX(ap.image_url) as image_url,
-      (SELECT id FROM creative_library WHERE ad_id = ap.ad_id ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC LIMIT 1) as library_id,
-      (SELECT persona FROM creative_library WHERE ad_id = ap.ad_id ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC LIMIT 1) as persona,
-      (SELECT desire FROM creative_library WHERE ad_id = ap.ad_id ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC LIMIT 1) as desire,
-      (SELECT awareness FROM creative_library WHERE ad_id = ap.ad_id ORDER BY CASE WHEN width = 1200 AND height = 1200 THEN 0 ELSE 1 END, created_at DESC LIMIT 1) as awareness
-    FROM ad_performance ap
-    WHERE ${since && until ? 'ap.date_start >= ? AND ap.date_start <= ?' : "ap.date_start >= date('now', ? || ' days')"}
-  `;
-  const params = since && until ? [since, until] : [`-${days}`];
+      let apiRows = getCache(cacheKey);
+      if (!apiRows) {
+        apiRows = await meta.getAdInsights({ timeRange: { since: dateFrom, until: dateTo } });
+        setCache(cacheKey, apiRows, 5 * 60 * 1000);
+      }
 
-  if (platform) {
-    query += ' AND ap.platform = ?';
-    params.push(platform);
-  }
-  if (req.query.campaign_id) {
-    query += ' AND ap.campaign_id = ?';
-    params.push(req.query.campaign_id);
-  }
-  if (req.query.adset_id) {
-    query += ' AND ap.adset_id = ?';
-    params.push(req.query.adset_id);
-  }
+      let filtered = [...apiRows];
+      if (req.query.campaign_id) filtered = filtered.filter(r => r.campaignId === req.query.campaign_id);
+      if (req.query.adset_id)    filtered = filtered.filter(r => r.adsetId   === req.query.adset_id);
 
-  query += ` GROUP BY ap.ad_id, ap.platform ORDER BY ${sortCol} ${sortOrder}`;
+      const allowedSorts = ['spend', 'roas', 'ctr', 'impressions', 'clicks', 'cpa', 'cpc', 'conversions'];
+      const sortKey = allowedSorts.includes(sort) ? sort : 'spend';
+      const sortDir = order === 'asc' ? 1 : -1;
+      filtered.sort((a, b) => sortDir * ((b[sortKey] || 0) - (a[sortKey] || 0)));
 
-  let rows;
-  try {
-    rows = db.prepare(query).all(...params);
-  } catch (e) {
-    return safeError(res, e, 'ad-performance');
+      const normalized = filtered.map(r => ({
+        ad_id: r.adId, ad_name: r.adName,
+        adset_id: r.adsetId, adset_name: r.adsetName,
+        campaign_id: r.campaignId, campaign_name: r.campaignName,
+        platform: 'meta',
+        impressions: r.impressions, clicks: r.clicks, spend: r.spend,
+        conversions: r.conversions, conversion_value: r.conversionValue,
+        ctr: r.ctr, cpc: r.cpc, cpm: r.cpm, roas: r.roas, cpa: r.cpa,
+        image_url: r.adId || null,  // thumbnail 프록시용 ad_id 전달
+        library_id: null, persona: null, desire: null, awareness: null,
+      }));
+
+      const enriched = await enrichWithLibrary(normalized);
+      return res.json(enriched);
+    } catch (e) {
+      logger.error('meta ad-performance realtime error', { error: e.message });
+    }
   }
 
-  // library_id 있는 행에 base64 썸네일 포함 (300px 리사이즈)
-  try {
-    const enriched = await Promise.all(rows.map(async row => {
-      if (!row.library_id) return row;
-      try {
-        const lib = db.prepare(`SELECT image_data FROM creative_library WHERE id = ?`).get(row.library_id);
-        if (!lib?.image_data) return row;
-        const thumb = await sharp(Buffer.from(lib.image_data))
-          .resize(600, 600, { fit: 'cover', position: 'centre' })
-          .jpeg({ quality: 70 })
-          .toBuffer();
-        return { ...row, library_thumb: `data:image/jpeg;base64,${thumb.toString('base64')}` };
-      } catch { return row; }
-    }));
-    res.json(enriched);
-  } catch (e) {
-    // enrichment 실패 시 원본 데이터라도 반환
-    logger.warn('ad-performance enrichment failed', { error: e.message });
-    res.json(rows);
+  // ── Google: 실시간 API ────────────────────────────────────────────
+  if (!platform || platform === 'google') {
+    const google = getGoogleClient();
+    if (google._configured) try {
+      const dateFrom = since || new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
+      const dateTo   = until || new Date().toISOString().split('T')[0];
+      const cacheKey = `adperf:google:${dateFrom}:${dateTo}`;
+      const cached = getCache(cacheKey);
+
+      let gRows = cached;
+      if (!gRows) {
+        gRows = await google.getAdInsights({ dateFrom, dateTo });
+        setCache(cacheKey, gRows, 5 * 60 * 1000);
+      }
+
+      if (req.query.campaign_id) gRows = gRows.filter(r => r.campaignId === req.query.campaign_id || `google_${r.campaignId}` === req.query.campaign_id);
+
+      const allowedSorts = ['spend', 'roas', 'ctr', 'impressions', 'clicks', 'cpa', 'cpc', 'conversions'];
+      const sortKey = allowedSorts.includes(sort) ? sort : 'spend';
+      const sortDir = order === 'asc' ? 1 : -1;
+      gRows.sort((a, b) => sortDir * ((b[sortKey] || 0) - (a[sortKey] || 0)));
+
+      const normalized = gRows.map(r => ({
+        ad_id: r.adId, ad_name: r.adName,
+        adset_id: r.adGroupId, adset_name: r.adGroupName,
+        campaign_id: `google_${r.campaignId}`, campaign_name: r.campaignName,
+        platform: 'google',
+        impressions: r.impressions, clicks: r.clicks, spend: r.spend,
+        conversions: r.conversions, conversion_value: r.conversionValue,
+        ctr: r.ctr, cpc: r.cpc, cpm: r.cpm || 0, roas: r.roas, cpa: r.cpa,
+        image_url: r.imageUrl || null,
+        library_id: null, persona: null, desire: null, awareness: null,
+      }));
+
+      if (platform === 'google') return res.json(normalized);
+      // platform=all 이면 Meta 결과와 합쳐서 반환은 별도 처리 불필요 — 아래에서 처리
+      return res.json(normalized);
+    } catch (e) {
+      logger.error('google ad-performance realtime error', { error: e.message });
+    }
   }
+
+  return res.json([]);
 });
 
 /** GET /api/ad-performance/summary — Aggregate stats for the Creatives header */
-app.get('/api/ad-performance/summary', (req, res) => {
+app.get('/api/ad-performance/summary', async (req, res) => {
   const { platform, since, until } = req.query;
   const days = validateDays(req.query.days, 7);
 
@@ -1446,6 +2201,43 @@ app.get('/api/ad-performance/summary', (req, res) => {
     return res.status(400).json({ error: 'Invalid platform' });
   }
 
+  // ── Meta: 실시간 API 집계 (미설정 시 DB 폴백) ──────────────────────
+  if (platform === 'meta') {
+    const meta = getMetaClient();
+    if (meta._configured) try {
+
+      const dateFrom = since || new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
+      const dateTo   = until || new Date().toISOString().split('T')[0];
+
+      let apiRows = await meta.getAdInsights({ timeRange: { since: dateFrom, until: dateTo } });
+      if (req.query.campaign_id) apiRows = apiRows.filter(r => r.campaignId === req.query.campaign_id);
+      if (req.query.adset_id)    apiRows = apiRows.filter(r => r.adsetId   === req.query.adset_id);
+
+      const total_ads         = apiRows.length;
+      const total_spend       = apiRows.reduce((s, r) => s + r.spend, 0);
+      const total_impressions = apiRows.reduce((s, r) => s + r.impressions, 0);
+      const total_clicks      = apiRows.reduce((s, r) => s + r.clicks, 0);
+      const total_conversions = apiRows.reduce((s, r) => s + r.conversions, 0);
+      const total_value       = apiRows.reduce((s, r) => s + r.conversionValue, 0);
+
+      return res.json({
+        total_ads,
+        total_spend,
+        total_impressions,
+        total_clicks,
+        total_conversions,
+        total_value,
+        avg_ctr:  total_impressions > 0 ? (total_clicks / total_impressions) * 100 : 0,
+        avg_roas: total_spend > 0 ? total_value / total_spend : 0,
+        avg_cpa:  total_conversions > 0 ? total_spend / total_conversions : 0,
+      });
+    } catch (e) {
+      logger.error('meta ad-performance/summary realtime error', { error: e.message });
+      // API 오류 시 DB 폴백
+    }
+  }
+
+  // ── DB 조회 (Google / meta API 미설정·오류 폴백) ──────────────────
   let query = `
     SELECT
       COUNT(DISTINCT ad_id) as total_ads,
@@ -1480,13 +2272,44 @@ app.get('/api/ad-performance/summary', (req, res) => {
 });
 
 /** GET /api/ad-performance/filters — Campaign/Adset filter options */
-app.get('/api/ad-performance/filters', (req, res) => {
+app.get('/api/ad-performance/filters', async (req, res) => {
   const { platform, campaign_id } = req.query;
 
   if (platform && !validatePlatform(platform)) {
     return res.status(400).json({ error: 'Invalid platform' });
   }
 
+  // ── Meta: 실시간 전체 캠페인 목록 조회 ────────────────────────────
+  if (platform === 'meta') {
+    const meta = getMetaClient();
+    if (meta._configured) {
+      try {
+        const metaCampaigns = await meta.getCampaigns(['ACTIVE', 'PAUSED', 'ARCHIVED']);
+        const campaigns = metaCampaigns.map(c => ({
+          campaign_id: String(c.id),
+          campaign_name: c.name,
+          status: c.status,
+        })).sort((a, b) => a.campaign_name.localeCompare(b.campaign_name));
+
+        // 광고세트는 DB에서 (캠페인 필터 적용)
+        let adsetQuery = 'SELECT DISTINCT adset_id, adset_name, campaign_id FROM ad_performance WHERE platform = ?';
+        const adsetParams = ['meta'];
+        if (campaign_id) {
+          adsetQuery += ' AND campaign_id = ?';
+          adsetParams.push(campaign_id);
+        }
+        adsetQuery += ' ORDER BY adset_name';
+        const adsets = db.prepare(adsetQuery).all(...adsetParams);
+
+        return res.json({ campaigns, adsets });
+      } catch (e) {
+        logger.error('meta filters realtime error', { error: e.message });
+        // 오류 시 DB 폴백
+      }
+    }
+  }
+
+  // ── DB 조회 폴백 ──────────────────────────────────────────────────
   let campaignQuery = 'SELECT DISTINCT campaign_id, campaign_name FROM ad_performance WHERE 1=1';
   const campaignParams = [];
   if (platform) {

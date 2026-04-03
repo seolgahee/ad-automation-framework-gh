@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ad Automation — Perplexity Style</title>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' ws: wss: http://localhost:* https://localhost:*; img-src 'self' data: https://*.fbcdn.net https://*.facebook.com https://tpc.googlesyndication.com https://img.youtube.com https://lh3.googleusercontent.com https://*.googleusercontent.com;" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' ws: wss: http://localhost:* https://localhost:* https://unpkg.com; img-src 'self' data: https://*.fbcdn.net https://*.facebook.com https://tpc.googlesyndication.com https://img.youtube.com https://lh3.googleusercontent.com https://*.googleusercontent.com;" />
   <!--
     PRODUCTION NOTE: For deployment, generate SRI hashes for each script:
       openssl dgst -sha384 -binary <file> | openssl base64 -A
@@ -1231,7 +1231,63 @@
         const NEEDS_MERCHANT = ['shopping'];
 
         const [mode, setMode] = useState('pmax');
-        const [pmaxMode, setPmaxMode] = useState('new'); // 'new' | 'add'
+        const [pmaxMode, setPmaxMode] = useState('new'); // 'new' | 'add' | 'winner'
+
+        // Meta Winner → PMAX 파이프라인 상태
+        const [winnerDays, setWinnerDays] = useState(7);
+        const [winners, setWinners] = useState(null);
+        const [winnersLoading, setWinnersLoading] = useState(false);
+        const [assetGroupId, setAssetGroupId] = useState('');
+        const [fieldType, setFieldType] = useState('MARKETING_IMAGE');
+        const [pushingId, setPushingId] = useState(null);
+        const [pushResults, setPushResults] = useState({});
+        const [pipelineCampaigns, setPipelineCampaigns] = useState([]);
+        const [pipelineAssetGroups, setPipelineAssetGroups] = useState([]);
+        const [pipelineCampaignId, setPipelineCampaignId] = useState('');
+        const [pipelineAssetGroupsLoading, setPipelineAssetGroupsLoading] = useState(false);
+
+        // PMAX 캠페인 목록 로드 (winner 탭 진입 시)
+        React.useEffect(() => {
+          if (pmaxMode !== 'winner') return;
+          apiFetch(`${API}/google/pmax-campaigns`).then(r => r.json()).then(data => {
+            setPipelineCampaigns(Array.isArray(data) ? data : []);
+          }).catch(() => setPipelineCampaigns([]));
+        }, [pmaxMode]);
+
+        // 캠페인 선택 시 에셋 그룹 목록 로드
+        React.useEffect(() => {
+          if (!pipelineCampaignId) { setPipelineAssetGroups([]); setAssetGroupId(''); return; }
+          setPipelineAssetGroupsLoading(true);
+          apiFetch(`${API}/google/campaigns/${pipelineCampaignId}/asset-groups`).then(r => r.json()).then(data => {
+            const groups = Array.isArray(data) ? data : [];
+            setPipelineAssetGroups(groups);
+            setAssetGroupId(groups.length > 0 ? String(groups[0].id) : '');
+          }).catch(() => setPipelineAssetGroups([])).finally(() => setPipelineAssetGroupsLoading(false));
+        }, [pipelineCampaignId]);
+
+        const checkWinners = async () => {
+          setWinnersLoading(true); setWinners(null);
+          try {
+            const data = await apiFetch(`${API}/creative-library/meta-winners?days=${winnerDays}`).then(r => r.json());
+            setWinners(data);
+          } catch (e) { setWinners({ error: e.message }); }
+          finally { setWinnersLoading(false); }
+        };
+
+        const pushToGoogle = async (libraryId) => {
+          if (!assetGroupId.trim()) { alert('에셋 그룹을 선택하세요'); return; }
+          setPushingId(libraryId);
+          try {
+            const data = await apiFetch(`${API}/creative-library/${libraryId}/push-to-google`, {
+              method: 'POST',
+              body: JSON.stringify({ assetGroupId: assetGroupId.trim(), fieldType }),
+            }).then(r => r.json());
+            setPushResults(prev => ({ ...prev, [libraryId]: { ok: data.success, msg: data.success ? 'Google PMAX 업로드 완료' : (data.error || '실패') } }));
+            if (data.success) setWinners(prev => ({ ...prev, winners: prev.winners.map(w => w.library_id === libraryId ? { ...w, google_pushed: true } : w) }));
+          } catch (e) {
+            setPushResults(prev => ({ ...prev, [libraryId]: { ok: false, msg: e.message } }));
+          } finally { setPushingId(null); }
+        };
         const [df, setDf] = useState({
           name: '', dailyBudget: '1', campaignId: '', adGroupName: '',
           keywords: '', finalUrl: '', adStatus: 'PAUSED',
@@ -2132,7 +2188,11 @@
             {mode === 'pmax' && (<>
               {/* 모드 토글 */}
               <div className="flex items-center gap-2 bg-white rounded-2xl border border-ppl-border p-1.5 shadow-sm w-fit">
-                {[{ id: 'new', label: '새 캠페인 생성' }, { id: 'add', label: '기존 에셋그룹에 이미지 추가' }].map(m => (
+                {[
+                  { id: 'new',    label: '새 캠페인 생성' },
+                  { id: 'add',    label: '기존 에셋그룹에 이미지 추가' },
+                  { id: 'winner', label: '🏆 Meta Winner → PMAX' },
+                ].map(m => (
                   <button key={m.id} onClick={() => setPmaxMode(m.id)}
                     className={`px-5 py-2 rounded-xl text-sm font-medium transition-colors ${pmaxMode === m.id ? 'bg-purple-500 text-white shadow-sm' : 'text-ppl-sub hover:text-ppl-text'}`}>
                     {m.label}
@@ -2142,6 +2202,139 @@
 
               {/* 기존 에셋그룹에 이미지 추가 */}
               {pmaxMode === 'add' && <PmaxAddAssetsForm />}
+
+              {/* Meta Winner → PMAX 파이프라인 */}
+              {pmaxMode === 'winner' && (
+                <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-5 space-y-4">
+                  <div className="flex items-center gap-2">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                    <p className="text-sm font-semibold text-ppl-text">Meta Winner → Google PMAX 파이프라인</p>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 font-semibold">ROAS ≥ 1.0</span>
+                  </div>
+
+                  {/* 설정 행 */}
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-ppl-sub uppercase mb-1">조회 기간</label>
+                      <select value={winnerDays} onChange={e => setWinnerDays(Number(e.target.value))}
+                        className="text-xs border border-ppl-border rounded-lg px-2 py-1.5 bg-white">
+                        {[3,7,14,30].map(d => <option key={d} value={d}>{d}일</option>)}
+                      </select>
+                    </div>
+                    <div className="flex-1 min-w-44">
+                      <label className="block text-[10px] font-semibold text-ppl-sub uppercase mb-1">PMAX 캠페인</label>
+                      <select value={pipelineCampaignId} onChange={e => setPipelineCampaignId(e.target.value)}
+                        className="w-full text-xs border border-ppl-border rounded-lg px-2 py-1.5 bg-white">
+                        <option value="">-- 캠페인 선택 --</option>
+                        {pipelineCampaigns.map(c => (
+                          <option key={c.id} value={String(c.id)}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex-1 min-w-44">
+                      <label className="block text-[10px] font-semibold text-ppl-sub uppercase mb-1">에셋 그룹{pipelineAssetGroupsLoading ? ' (로딩 중...)' : ''}</label>
+                      <select value={assetGroupId} onChange={e => setAssetGroupId(e.target.value)}
+                        disabled={!pipelineCampaignId || pipelineAssetGroupsLoading}
+                        className="w-full text-xs border border-ppl-border rounded-lg px-2 py-1.5 bg-white disabled:opacity-50">
+                        <option value="">-- 에셋 그룹 선택 --</option>
+                        {pipelineAssetGroups.map(g => (
+                          <option key={g.id} value={String(g.id)}>{g.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-ppl-sub uppercase mb-1">이미지 타입</label>
+                      <select value={fieldType} onChange={e => setFieldType(e.target.value)}
+                        className="text-xs border border-ppl-border rounded-lg px-2 py-1.5 bg-white">
+                        <option value="MARKETING_IMAGE">마케팅 (1.91:1)</option>
+                        <option value="SQUARE_MARKETING_IMAGE">정방형 (1:1)</option>
+                        <option value="PORTRAIT_MARKETING_IMAGE">세로형 (4:5)</option>
+                      </select>
+                    </div>
+                    <button onClick={checkWinners} disabled={winnersLoading}
+                      className="text-xs px-4 py-1.5 rounded-lg bg-ppl-teal text-white font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity flex items-center gap-1.5">
+                      {winnersLoading && <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>}
+                      {winnersLoading ? '조회 중...' : 'Winner 확인'}
+                    </button>
+                  </div>
+
+                  {/* 결과 */}
+                  {winners?.error && (
+                    <div className="rounded-xl px-3 py-2 text-xs bg-red-50 text-red-600 border border-red-100">{winners.error}</div>
+                  )}
+                  {winners && !winners.error && (
+                    <div className="space-y-2">
+                      {(() => {
+                        const filtered = (winners.winners || []).filter(w => {
+                          if (!w.width || !w.height) return true;
+                          const ratio = w.width / w.height;
+                          if (fieldType === 'SQUARE_MARKETING_IMAGE') return ratio >= 0.95 && ratio <= 1.05;
+                          if (fieldType === 'PORTRAIT_MARKETING_IMAGE') return ratio >= 0.75 && ratio <= 0.85;
+                          if (fieldType === 'MARKETING_IMAGE') return ratio >= 1.85 && ratio <= 1.97;
+                          return true;
+                        });
+                        return (
+                          <div className="flex items-center gap-3 text-[11px] text-ppl-sub">
+                            <span>전체 <strong className="text-ppl-text">{filtered.length}</strong>개 소재</span>
+                            <span>Winner (ROAS ≥ {winners.threshold}) <strong className="text-emerald-600">{filtered.filter(w => w.is_winner).length}</strong>개</span>
+                            <span>{winners.since} ~ {winners.until}</span>
+                          </div>
+                        );
+                      })()}
+                      {winners.winners?.length === 0 && (
+                        <p className="text-xs text-ppl-sub py-4 text-center">소재 업로드 시 library_id와 함께 전송하면 자동으로 기록됩니다.</p>
+                      )}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {winners.winners?.filter(w => {
+                          if (!w.width || !w.height) return true;
+                          const ratio = w.width / w.height;
+                          if (fieldType === 'SQUARE_MARKETING_IMAGE') return ratio >= 0.95 && ratio <= 1.05;
+                          if (fieldType === 'PORTRAIT_MARKETING_IMAGE') return ratio >= 0.75 && ratio <= 0.85;
+                          if (fieldType === 'MARKETING_IMAGE') return ratio >= 1.85 && ratio <= 1.97;
+                          return true;
+                        }).map(w => {
+                          const pushResult = pushResults[w.library_id];
+                          return (
+                            <div key={w.library_id}
+                              className={`rounded-xl border p-3 flex gap-3 ${w.is_winner ? 'border-emerald-200 bg-emerald-50/40' : 'border-ppl-border bg-white'}`}>
+                              <div className="w-14 h-14 rounded-lg overflow-hidden shrink-0 bg-ppl-bg">
+                                {w.library_id
+                                  ? <img src={`/thumbnails/library/${w.library_id}`} alt={w.name} className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='flex'; }} />
+                                  : null}
+                                <div className="w-full h-full flex items-center justify-center text-[9px] text-ppl-sub" style={{display: w.library_id ? 'none' : 'flex'}}>no img</div>
+                              </div>
+                              <div className="flex-1 min-w-0 space-y-1">
+                                <p className="text-xs font-semibold text-ppl-text truncate" title={w.name}>{w.name}</p>
+                                <div className="flex items-center gap-2">
+                                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${w.is_winner ? 'bg-emerald-500 text-white' : 'bg-gray-200 text-gray-500'}`}>
+                                    ROAS {w.roas}
+                                  </span>
+                                  <span className="text-[10px] text-ppl-sub">₩{Number(w.spend).toLocaleString()}</span>
+                                </div>
+                                {w.persona && <p className="text-[10px] text-ppl-sub truncate">P: {w.persona}</p>}
+                                <div className="flex items-center gap-1.5 pt-0.5">
+                                  {w.google_pushed
+                                    ? <span className="text-[10px] text-blue-600 font-semibold">✓ Google 업로드됨</span>
+                                    : w.is_winner ? (
+                                      <button onClick={() => pushToGoogle(w.library_id)} disabled={pushingId === w.library_id}
+                                        className="text-[10px] px-2 py-1 rounded-md bg-blue-500 text-white font-semibold hover:bg-blue-600 disabled:opacity-50 flex items-center gap-1">
+                                        {pushingId === w.library_id && <span className="w-2.5 h-2.5 border border-white border-t-transparent rounded-full animate-spin"></span>}
+                                        Google에 올리기
+                                      </button>
+                                    ) : <span className="text-[10px] text-ppl-sub">기준 미달</span>}
+                                  {pushResult && (
+                                    <span className={`text-[10px] ${pushResult.ok ? 'text-emerald-600' : 'text-red-500'}`}>{pushResult.msg}</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* 새 캠페인 생성 */}
               {pmaxMode === 'new' && (<>
@@ -3212,7 +3405,7 @@
       const [inputValue, setInputValue] = useState('');
       const [chatHistory, setChatHistory] = useState([]);
       const [activeView, setActiveView] = useState('overview');
-      const [selectedPlatform, setSelectedPlatform] = useState('all');
+      const [selectedPlatform, setSelectedPlatform] = useState('meta');
       const ws = useRef(null);
       const chatEndRef = useRef(null);
 
@@ -3253,7 +3446,6 @@
 
       // ─── Ad Performance (Creatives Gallery) state ───
       const [adPerformance, setAdPerformance] = useState([]);
-      const [adPerfSummary, setAdPerfSummary] = useState(null);
       const [adPerfSort, setAdPerfSort] = useState('spend');
       const [adPerfFilter, setAdPerfFilter] = useState('all'); // all, best, good, low
       const [adPerfPlatform, setAdPerfPlatform] = useState('all');
@@ -3261,7 +3453,31 @@
       const [adPerfDateRange, setAdPerfDateRange] = useState({ since: defaultAdPerfSince, until: today });
       const [adPerfCampaignId, setAdPerfCampaignId] = useState('');
       const [adPerfAdsetId, setAdPerfAdsetId] = useState('');
+      const [refreshingImageUrls, setRefreshingImageUrls] = useState(false);
+      const [collecting, setCollecting] = useState(false);
+      const [lastCollected, setLastCollected] = useState(null);
+
+      const triggerCollect = async () => {
+        setCollecting(true);
+        try {
+          await apiFetch(`${API}/collect`, { method: 'POST' });
+          setLastCollected(new Date().toLocaleTimeString('ko-KR'));
+          fetchData();
+        } catch(e) { alert('수집 실패: ' + e.message); }
+        setCollecting(false);
+      };
       const [adPerfFilterOptions, setAdPerfFilterOptions] = useState({ campaigns: [], adsets: [] });
+
+      // ─── Creative Insights state ───
+      const [creativeInsights, setCreativeInsights] = useState(null);
+      const [insightsLoading, setInsightsLoading] = useState(false);
+
+      // ─── Campaign Daily Performance state ───
+      const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+      const [campaignDailySince, setCampaignDailySince] = useState(yesterday);
+      const [campaignDailyUntil, setCampaignDailyUntil] = useState(yesterday);
+      const [campaignDailyData, setCampaignDailyData] = useState([]);
+      const [campaignDailyLoading, setCampaignDailyLoading] = useState(false);
 
       const fetchContentData = useCallback(async () => {
         try {
@@ -3278,29 +3494,30 @@
         } catch (err) { console.error('Content fetch failed:', err); }
       }, []);
 
-      const fetchAdPerfFilters = useCallback(async () => {
-        try {
-          const pParam = selectedPlatform !== 'all' ? `platform=${selectedPlatform}` : '';
-          const cParam = adPerfCampaignId ? `&campaign_id=${adPerfCampaignId}` : '';
-          const data = await apiFetch(`${API}/ad-performance/filters?${pParam}${cParam}`).then(r => r.json());
-          setAdPerfFilterOptions(data);
-        } catch (err) { console.error('Ad perf filters fetch failed:', err); }
-      }, [selectedPlatform, adPerfCampaignId]);
 
       const fetchAdPerformance = useCallback(async () => {
         try {
           const platformParam = selectedPlatform !== 'all' ? `&platform=${selectedPlatform}` : '';
-          const campaignParam = adPerfCampaignId ? `&campaign_id=${adPerfCampaignId}` : '';
-          const adsetParam = adPerfAdsetId ? `&adset_id=${adPerfAdsetId}` : '';
+          const pParam = selectedPlatform !== 'all' ? `platform=${selectedPlatform}` : '';
           const dateParams = `since=${adPerfDateRange.since}&until=${adPerfDateRange.until}`;
-          const [rows, summary] = await Promise.all([
-            apiFetch(`${API}/ad-performance?${dateParams}&sort=${adPerfSort}&order=desc${platformParam}${campaignParam}${adsetParam}`).then(r => r.json()).catch(() => []),
-            apiFetch(`${API}/ad-performance/summary?${dateParams}${platformParam}${campaignParam}${adsetParam}`).then(r => r.json()).catch(() => null),
+          const [rows, filters] = await Promise.all([
+            apiFetch(`${API}/ad-performance?${dateParams}&sort=${adPerfSort}&order=desc${platformParam}`)
+              .then(r => r.json()).then(d => Array.isArray(d) ? d : []).catch(() => []),
+            apiFetch(`${API}/ad-performance/filters?${pParam}`)
+              .then(r => r.json()).catch(() => null),
           ]);
           setAdPerformance(rows);
-          setAdPerfSummary(summary);
+          if (filters?.campaigns?.length > 0) {
+            setAdPerfFilterOptions(filters);
+          } else if (rows.length > 0) {
+            const campaigns = [...new Map(rows.map(r => [r.campaign_id, r.campaign_name])).entries()]
+              .map(([id, name]) => ({ campaign_id: id, campaign_name: name }));
+            const adsets = [...new Map(rows.map(r => [r.adset_id, r.adset_name])).entries()]
+              .map(([id, name]) => ({ adset_id: id, adset_name: name }));
+            setAdPerfFilterOptions({ campaigns, adsets });
+          }
         } catch (err) { console.error('Ad performance fetch failed:', err); }
-      }, [adPerfDateRange, adPerfSort, selectedPlatform, adPerfCampaignId, adPerfAdsetId]);
+      }, [adPerfDateRange, adPerfSort, selectedPlatform]);
 
       const fetchData = useCallback(async () => {
         try {
@@ -3324,11 +3541,50 @@
         }
       }, [days, selectedPlatform, activeView, dateRange]);
 
+      const fetchCreativeInsights = useCallback(async () => {
+        if (selectedPlatform !== 'meta') return;
+        setInsightsLoading(true);
+        try {
+          const res = await apiFetch(`${API}/insights/creative`);
+          const json = await res.json();
+          setCreativeInsights(json);
+        } catch (e) {
+          setCreativeInsights(null);
+        } finally {
+          setInsightsLoading(false);
+        }
+      }, [selectedPlatform]);
+
+      useEffect(() => {
+        if (activeView === 'overview' && selectedPlatform === 'meta') {
+          fetchCreativeInsights();
+        }
+      }, [selectedPlatform, activeView]);
+
+      const fetchCampaignDaily = useCallback(async (since, until) => {
+        if (!since || !until || !['meta', 'google'].includes(selectedPlatform)) return;
+        setCampaignDailyLoading(true);
+        try {
+          const res = await apiFetch(`${API}/campaign-daily?since=${since}&until=${until}&platform=${selectedPlatform}`);
+          const json = await res.json();
+          setCampaignDailyData(Array.isArray(json) ? json : []);
+        } catch (e) {
+          setCampaignDailyData([]);
+        } finally {
+          setCampaignDailyLoading(false);
+        }
+      }, [selectedPlatform]);
+
+      useEffect(() => {
+        if (activeView === 'overview' && ['meta', 'google'].includes(selectedPlatform)) {
+          fetchCampaignDaily(campaignDailySince, campaignDailyUntil);
+        }
+      }, [campaignDailySince, campaignDailyUntil, selectedPlatform, activeView]);
+
       useEffect(() => {
         fetchData();
         fetchContentData();
         fetchAdPerformance();
-        fetchAdPerfFilters();
         ws.current = new WebSocket(WS_URL);
         ws.current.onopen = () => setConnected(true);
         ws.current.onclose = () => setConnected(false);
@@ -3337,7 +3593,7 @@
           if (['creative_assembled', 'creative_registered', 'pipeline_complete', 'ab_test_created', 'ab_test_evaluated', 'audience_created'].includes(msg.type)) fetchContentData();
         };
         return () => { ws.current?.close(); };
-      }, [fetchData, fetchContentData, fetchAdPerformance, fetchAdPerfFilters]);
+      }, [fetchData, fetchContentData, fetchAdPerformance]);
 
       const handleCreativeUpload = async () => {
         setUploadStatus('loading');
@@ -3453,7 +3709,7 @@
               { icon: Icons.upload, label: 'Creative Upload', view: 'meta-creative' },
               { icon: Icons.image, label: '소재 라이브러리', view: 'library' },
             ].map((item, i) => (
-              <button key={i} onClick={() => setActiveView(item.view)}
+              <button key={i} onClick={() => { setActiveView(item.view); if (item.view === 'meta-creative' && selectedPlatform === 'all') setSelectedPlatform('meta'); }}
                 className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${activeView === item.view ? 'bg-ppl-teal text-white' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
                 {item.icon}
                 <span>{item.label}</span>
@@ -3934,9 +4190,10 @@
           none: 'bg-gray-100 text-gray-400',
         };
         const platformStyle = {
-          meta: { bg: 'bg-blue-500', text: 'text-white', label: 'Meta' },
-          google: { bg: 'bg-amber-500', text: 'text-white', label: 'Google' },
-          tiktok: { bg: 'bg-gray-800', text: 'text-white', label: 'TikTok' },
+          meta:   { bg: 'bg-blue-500',   text: 'text-white', label: 'Meta' },
+          google: { bg: 'bg-amber-500',  text: 'text-white', label: 'Google' },
+          tiktok: { bg: 'bg-gray-800',   text: 'text-white', label: 'TikTok' },
+          naver:  { bg: 'bg-green-500',  text: 'text-white', label: 'Naver' },
         };
         // Placeholder gradient colors for thumbnails
         const thumbColors = [
@@ -3956,9 +4213,31 @@
         };
 
         const filteredAds = adPerformance.filter(row => {
-          if (adPerfFilter === 'all') return true;
-          return getTier(row) === adPerfFilter;
+          if (adPerfCampaignId && row.campaign_id !== adPerfCampaignId) return false;
+          if (adPerfAdsetId && row.adset_id !== adPerfAdsetId) return false;
+          if (adPerfFilter !== 'all' && getTier(row) !== adPerfFilter) return false;
+          return true;
         });
+
+        const adPerfSummary = (() => {
+          if (filteredAds.length === 0) return null;
+          const total_spend       = filteredAds.reduce((s, r) => s + (r.spend || 0), 0);
+          const total_impressions = filteredAds.reduce((s, r) => s + (r.impressions || 0), 0);
+          const total_clicks      = filteredAds.reduce((s, r) => s + (r.clicks || 0), 0);
+          const total_conversions = filteredAds.reduce((s, r) => s + (r.conversions || 0), 0);
+          const total_value       = filteredAds.reduce((s, r) => s + (r.conversion_value || 0), 0);
+          return {
+            total_ads:        filteredAds.length,
+            total_spend,
+            total_impressions,
+            total_clicks,
+            total_conversions,
+            total_value,
+            avg_ctr:  total_impressions > 0 ? (total_clicks / total_impressions) * 100 : 0,
+            avg_roas: total_spend > 0 ? total_value / total_spend : 0,
+            avg_cpa:  total_conversions > 0 ? total_spend / total_conversions : 0,
+          };
+        })();
 
         // image_url 중복 카운트 (null/빈 값 제외)
         const imageUrlCount = {};
@@ -4010,6 +4289,34 @@
             {/* PMAX 에셋 성과 뷰 */}
             {galleryTab === 'pmax-assets' && (
               <div className="space-y-4">
+                {/* 날짜 선택기 */}
+                <div className="flex justify-end">
+                  <div className="flex items-center gap-2 bg-white border border-ppl-border rounded-2xl px-4 py-3 shadow-sm">
+                    <div className="flex flex-col">
+                      <span className="text-[10px] text-ppl-sub mb-0.5">시작일</span>
+                      <input
+                        type="date"
+                        value={adPerfDateRange.since}
+                        max={adPerfDateRange.until}
+                        onChange={e => setAdPerfDateRange(prev => ({ ...prev, since: e.target.value }))}
+                        className="text-sm border border-ppl-border rounded-lg px-2 py-1 bg-white cursor-pointer"
+                      />
+                    </div>
+                    <span className="text-ppl-sub mt-4">~</span>
+                    <div className="flex flex-col">
+                      <span className="text-[10px] text-ppl-sub mb-0.5">종료일</span>
+                      <input
+                        type="date"
+                        value={adPerfDateRange.until}
+                        min={adPerfDateRange.since}
+                        max={today}
+                        onChange={e => setAdPerfDateRange(prev => ({ ...prev, until: e.target.value }))}
+                        className="text-sm border border-ppl-border rounded-lg px-2 py-1 bg-white cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                </div>
+
                 {/* 캠페인 선택 */}
                 {pmaxAssets.length > 0 && (() => {
                   const campaigns = [...new Map(pmaxAssets.map(r => [r.campaignId, r.campaignName])).entries()];
@@ -4128,7 +4435,32 @@
             {/* 기존 소재 성과 뷰 */}
             {galleryTab === 'ads' && (<>
             {/* 날짜 선택기는 ads 탭에서만 노출 */}
-            <div className="flex justify-end">
+            <div className="flex justify-end items-center gap-3">
+              {selectedPlatform === 'meta' && (
+                <button
+                  onClick={async () => {
+                    setRefreshingImageUrls(true);
+                    try {
+                      const r = await fetch(`${API}/meta/refresh-image-urls`, { method: 'POST' });
+                      const d = await r.json();
+                      if (d.success) {
+                        // 캐시된 이미지 강제 리로드
+                        document.querySelectorAll('img[src*="creative-thumbnail"]').forEach(img => {
+                          const src = img.src;
+                          img.src = '';
+                          setTimeout(() => { img.src = src + '?t=' + Date.now(); }, 50);
+                        });
+                        alert(`이미지 URL 갱신 완료: ${d.updated}/${d.total}개`);
+                      }
+                    } catch(e) { alert('갱신 실패: ' + e.message); }
+                    setRefreshingImageUrls(false);
+                  }}
+                  disabled={refreshingImageUrls}
+                  className="px-3 py-2 text-xs font-medium bg-white border border-ppl-border rounded-xl text-ppl-sub hover:text-ppl-text hover:border-ppl-teal transition-colors disabled:opacity-50"
+                >
+                  {refreshingImageUrls ? '갱신 중...' : '이미지 고해상도 갱신'}
+                </button>
+              )}
               <div className="flex items-center gap-2 bg-white border border-ppl-border rounded-2xl px-4 py-3 shadow-sm">
                 <div className="flex flex-col">
                   <span className="text-[10px] text-ppl-sub mb-0.5">시작일</span>
@@ -4213,9 +4545,9 @@
                   className="text-xs border border-ppl-border rounded-lg px-2 py-1.5 bg-white cursor-pointer max-w-[160px]"
                 >
                   <option value="">광고그룹 전체</option>
-                  {adPerfFilterOptions.adsets.map(a => (
-                    <option key={a.adset_id} value={a.adset_id}>{a.adset_name}</option>
-                  ))}
+                  {adPerfFilterOptions.adsets
+                    .filter(a => !adPerfCampaignId || adPerformance.some(r => r.campaign_id === adPerfCampaignId && r.adset_id === a.adset_id))
+                    .map(a => <option key={a.adset_id} value={a.adset_id}>{a.adset_name}</option>)}
                 </select>
               </div>
               <div className="flex items-center gap-2">
@@ -4253,19 +4585,28 @@
                       className="bg-white rounded-xl border border-ppl-border overflow-hidden hover:shadow-md hover:border-ppl-teal/40 transition-all group cursor-pointer">
                       {/* Thumbnail */}
                       {row.library_thumb ? (
-                        <div className="aspect-square relative overflow-hidden bg-gray-100">
+                        <div className="h-40 relative overflow-hidden bg-gray-50 flex items-center justify-center">
                           <img src={row.library_thumb} alt={row.ad_name || row.ad_id}
-                            className="w-full h-full object-cover" />
+                            className="max-h-full max-w-full object-contain" />
                           <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-500/80 text-white">라이브러리</span>
                           <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
                         </div>
+                      ) : row.image_url ? (
+                        <div className="h-40 relative overflow-hidden bg-gray-50 flex items-center justify-center">
+                          <img
+                            src={`${API}/meta/creative-thumbnail/${row.ad_id}`}
+                            alt={row.ad_name || row.ad_id}
+                            className="max-h-full max-w-full object-contain"
+                            onError={e => { e.target.parentElement.style.display = 'none'; }} />
+                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
+                        </div>
                       ) : isPmax ? (
-                        <div className="aspect-square bg-gradient-to-br from-amber-400 to-amber-600 relative flex flex-col items-center justify-center gap-2">
+                        <div className="h-40 bg-gradient-to-br from-amber-400 to-amber-600 relative flex flex-col items-center justify-center gap-2">
                           <svg width="28" height="28" fill="none" stroke="white" strokeWidth="1.5" viewBox="0 0 24 24" className="opacity-80"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
                           <p className="text-white/90 text-xs font-semibold text-center px-3 leading-tight line-clamp-3">{row.ad_name}</p>
                         </div>
                       ) : (
-                        <div className={`aspect-square bg-gradient-to-br ${getThumbColor(row.ad_id)} relative flex items-center justify-center`}>
+                        <div className={`h-40 bg-gradient-to-br ${getThumbColor(row.ad_id)} relative flex items-center justify-center`}>
                           <div className="text-white/80 text-center px-4">
                             <p className="text-sm font-semibold leading-tight line-clamp-3 drop-shadow">{row.ad_name || row.ad_id}</p>
                           </div>
@@ -4297,8 +4638,7 @@
 
                       {/* Ad info */}
                       <div className="px-3 pt-1.5 pb-1">
-                        <p className="text-sm font-semibold text-ppl-text truncate leading-tight">{row.ad_name || `Ad ${row.ad_id}`}</p>
-                        <p className="text-xs text-ppl-sub truncate mt-0.5">{row.campaign_name || row.campaign_id}</p>
+                        <p className="text-xs font-semibold text-ppl-text leading-tight break-words">{row.ad_name || `Ad ${row.ad_id}`}</p>
                       </div>
 
                       {/* Metrics grid */}
@@ -4354,6 +4694,11 @@
         const [mappingId, setMappingId] = React.useState(null);
         const [metaAdList, setMetaAdList] = React.useState([]);
         const [uploadResult, setUploadResult] = React.useState(null);
+
+        // Meta 업로드 상태
+        const [metaUploadingId, setMetaUploadingId] = React.useState(null);
+        const [metaUploadResults, setMetaUploadResults] = React.useState({});
+
 
         const loadLibrary = () => {
           setLoading(true);
@@ -4425,6 +4770,39 @@
           setMappingId(null);
         };
 
+        const uploadToMeta = async (item) => {
+          setMetaUploadingId(item.id);
+          setMetaUploadResults(prev => ({ ...prev, [item.id]: null }));
+          try {
+            // thumbnail 엔드포인트에서 이미지 blob 가져오기
+            const imgRes = await fetch(`${API}/creative-library/thumbnail/${item.id}`, {
+              ...(API_TOKEN ? { headers: { Authorization: `Bearer ${API_TOKEN}` } } : {}),
+            });
+            if (!imgRes.ok) throw new Error('이미지 로드 실패');
+            const blob = await imgRes.blob();
+            const formData = new FormData();
+            formData.append('image', blob, item.name + '.jpg');
+            formData.append('library_id', item.id);
+
+            const res = await fetch(`${API}/meta/upload-image`, {
+              method: 'POST',
+              ...(API_TOKEN ? { headers: { Authorization: `Bearer ${API_TOKEN}` } } : {}),
+              body: formData,
+            });
+            const data = await res.json();
+            if (data.hash) {
+              setMetaUploadResults(prev => ({ ...prev, [item.id]: { ok: true, hash: data.hash } }));
+              setLibrary(prev => prev.map(i => i.id === item.id ? { ...i, meta_uploaded: 1, processing_status: 'uploaded_to_meta' } : i));
+            } else {
+              setMetaUploadResults(prev => ({ ...prev, [item.id]: { ok: false, msg: data.error || '실패' } }));
+            }
+          } catch (e) {
+            setMetaUploadResults(prev => ({ ...prev, [item.id]: { ok: false, msg: e.message } }));
+          } finally {
+            setMetaUploadingId(null);
+          }
+        };
+
         const mappedCount = library.filter(i => i.ad_id).length;
 
         return (
@@ -4470,6 +4848,7 @@
                 <span>미연결 <strong className="text-amber-500">{library.length - mappedCount}</strong>개</span>
               </div>
             )}
+
 
             {/* 이미지 그리드 */}
             {loading && (
@@ -4571,6 +4950,37 @@
                             + Meta 광고 연결
                           </button>
                         )}
+                      </div>
+
+                      {/* Meta 업로드 */}
+                      <div className="px-3 pb-3 border-t border-ppl-border pt-2.5">
+                        {(() => {
+                          const result = metaUploadResults[item.id];
+                          const isUploading = metaUploadingId === item.id;
+                          if (item.meta_uploaded) {
+                            return (
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] text-blue-600 font-semibold">✓ Meta 업로드됨</span>
+                                <button onClick={() => uploadToMeta(item)} disabled={isUploading}
+                                  className="text-[10px] text-ppl-sub hover:text-blue-500">재업로드</button>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div className="space-y-1">
+                              <button onClick={() => uploadToMeta(item)} disabled={isUploading}
+                                className="w-full text-[11px] py-1.5 rounded-lg bg-blue-500 text-white font-semibold hover:bg-blue-600 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5">
+                                {isUploading && <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>}
+                                {isUploading ? 'Meta 업로드 중...' : 'Meta에 업로드'}
+                              </button>
+                              {result && (
+                                <p className={`text-[10px] text-center ${result.ok ? 'text-emerald-600' : 'text-red-500'}`}>
+                                  {result.ok ? `완료 (hash: ${result.hash?.slice(0,8)}...)` : result.msg}
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
 
                       {/* P.D.A 태그 */}
@@ -4746,28 +5156,15 @@
               </div>
             </div>
 
-            {/* 데이터 수집 주기 */}
+            {/* 데이터 수집 */}
             <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
-              <div className="flex items-center gap-2 mb-4">
+              <div className="flex items-center gap-2 mb-3">
                 {Icons.clock}
-                <h3 className="text-base font-semibold">데이터 수집 주기</h3>
-                <span className="ml-auto text-xs bg-teal-50 text-teal-600 px-2 py-0.5 rounded-full font-medium">현재 {collectInterval}분</span>
+                <h3 className="text-base font-semibold">데이터 수집</h3>
+                <span className="ml-auto text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-medium">수동 모드</span>
               </div>
-              <p className="text-xs text-ppl-sub mb-4">Meta · Google 성과 데이터를 서버에서 자동 수집하는 주기를 설정합니다.</p>
-              <div className="flex items-center gap-3">
-                <select
-                  value={collectIntervalDraft}
-                  onChange={e => setCollectIntervalDraft(parseInt(e.target.value))}
-                  className="border border-ppl-border rounded-lg px-3 py-2 text-sm bg-white flex-1">
-                  {[5, 10, 15, 30, 60, 120].map(m => (
-                    <option key={m} value={m}>{m}분</option>
-                  ))}
-                </select>
-                <button onClick={saveInterval}
-                  className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${intervalSaved ? 'bg-emerald-500 text-white' : 'bg-ppl-teal text-white hover:opacity-90'}`}>
-                  {intervalSaved ? '저장됨 ✓' : '적용'}
-                </button>
-              </div>
+              <p className="text-xs text-ppl-sub mb-4">Overview 화면 상단 "데이터 수집" 버튼으로 수동 실행합니다. 자동 스케줄 없음.</p>
+              {lastCollected && <p className="text-xs text-emerald-600">마지막 수집: {lastCollected}</p>}
             </div>
 
             {/* 캠페인 제어 */}
@@ -4788,104 +5185,271 @@
       };
 
       const OverviewPanel = () => (
-        <div className="space-y-6">
+        <div className="space-y-3">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-2xl font-bold text-ppl-text">Performance Overview</h2>
-              <p className="text-sm text-ppl-sub mt-1">{selectedPlatform === 'all' ? '전체 매체' : selectedPlatform === 'meta' ? 'Meta' : 'Google'} · 실시간 성과</p>
+              <h2 className="text-xl font-bold text-ppl-text">Performance Overview</h2>
+              <p className="text-xs text-ppl-sub mt-0.5">{selectedPlatform === 'all' ? '전체 매체' : selectedPlatform === 'meta' ? 'Meta' : 'Google'} · 실시간 성과</p>
             </div>
-
-            {/* 날짜 선택 */}
-            <div className="flex items-center gap-2 bg-white border border-ppl-border rounded-2xl px-4 py-3 shadow-sm">
+            <div className="flex items-center gap-2 bg-white border border-ppl-border rounded-xl px-3 py-2 shadow-sm">
               <div className="flex flex-col">
-                <span className="text-[10px] text-ppl-sub mb-0.5">시작일</span>
-                <input
-                  type="date"
-                  value={dateRange.since}
-                  max={dateRange.until}
+                <span className="text-[9px] text-ppl-sub mb-0.5">시작일</span>
+                <input type="date" value={dateRange.since} max={dateRange.until}
                   onChange={e => setDateRange(prev => ({ ...prev, since: e.target.value }))}
-                  className="text-sm border border-ppl-border rounded-lg px-2 py-1 bg-white cursor-pointer"
-                />
+                  className="text-xs border border-ppl-border rounded px-1.5 py-0.5 bg-white cursor-pointer" />
               </div>
-              <span className="text-ppl-sub mt-4">~</span>
+              <span className="text-ppl-sub text-xs mt-3">~</span>
               <div className="flex flex-col">
-                <span className="text-[10px] text-ppl-sub mb-0.5">종료일</span>
-                <input
-                  type="date"
-                  value={dateRange.until}
-                  min={dateRange.since}
-                  max={today}
+                <span className="text-[9px] text-ppl-sub mb-0.5">종료일</span>
+                <input type="date" value={dateRange.until} min={dateRange.since} max={today}
                   onChange={e => setDateRange(prev => ({ ...prev, until: e.target.value }))}
-                  className="text-sm border border-ppl-border rounded-lg px-2 py-1 bg-white cursor-pointer"
-                />
+                  className="text-xs border border-ppl-border rounded px-1.5 py-0.5 bg-white cursor-pointer" />
               </div>
             </div>
           </div>
 
           {overview && (
             <>
-              {/* KPI 카드 */}
-              <div className="grid grid-cols-5 gap-4">
+              {/* KPI 카드 — 컴팩트 */}
+              <div className="grid grid-cols-5 gap-2">
                 {[
-                  { label: '지출금액', value: `₩${krwFmt.format(Math.round(overview.totalSpend || 0))}`, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-100' },
-                  { label: '구매전환값', value: `₩${krwFmt.format(Math.round(overview.totalValue || 0))}`, color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-100' },
-                  { label: 'ROAS', value: (overview.roas || 0).toFixed(2), color: overview.roas >= 1.5 ? 'text-emerald-600' : 'text-red-500', bg: overview.roas >= 1.5 ? 'bg-emerald-50' : 'bg-red-50', border: overview.roas >= 1.5 ? 'border-emerald-100' : 'border-red-100' },
-                  { label: 'CPC', value: `₩${krwFmt.format(Math.round(overview.cpc || 0))}`, color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-100' },
-                  { label: 'CTR', value: `${(overview.ctr || 0).toFixed(2)}%`, color: 'text-teal-600', bg: 'bg-teal-50', border: 'border-teal-100' },
+                  { label: '지출금액',   value: `₩${krwFmt.format(Math.round(overview.totalSpend || 0))}`,  color: 'text-blue-600',    bg: 'bg-blue-50',    border: 'border-blue-100' },
+                  { label: '구매전환값', value: `₩${krwFmt.format(Math.round(overview.totalValue || 0))}`,  color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-100' },
+                  { label: 'ROAS',       value: (overview.roas || 0).toFixed(2), color: overview.roas >= 1.5 ? 'text-emerald-600' : 'text-red-500', bg: overview.roas >= 1.5 ? 'bg-emerald-50' : 'bg-red-50', border: overview.roas >= 1.5 ? 'border-emerald-100' : 'border-red-100' },
+                  { label: 'CPC',        value: `₩${krwFmt.format(Math.round(overview.cpc || 0))}`,         color: 'text-purple-600',  bg: 'bg-purple-50',  border: 'border-purple-100' },
+                  { label: 'CTR',        value: `${(overview.ctr || 0).toFixed(2)}%`,                        color: 'text-teal-600',    bg: 'bg-teal-50',    border: 'border-teal-100' },
                 ].map((kpi, i) => (
-                  <div key={i} className={`rounded-2xl p-5 ${kpi.bg} border ${kpi.border}`}>
-                    <p className="text-sm text-ppl-sub mb-2">{kpi.label}</p>
-                    <p className={`text-2xl font-bold ${kpi.color}`}>{kpi.value}</p>
+                  <div key={i} className={`rounded-xl px-4 py-3 ${kpi.bg} border ${kpi.border}`}>
+                    <p className="text-[10px] text-ppl-sub mb-1">{kpi.label}</p>
+                    <p className={`text-lg font-bold ${kpi.color}`}>{kpi.value}</p>
                   </div>
                 ))}
               </div>
 
-              {/* 차트 */}
-              <div className="grid grid-cols-2 gap-4">
-                {/* 왼쪽: 지출금액 + ROAS */}
-                <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
-                  <div className="flex items-center gap-4 mb-4">
-                    <p className="text-base font-semibold">지출금액 &amp; ROAS</p>
-                    <div className="flex items-center gap-3 ml-auto">
-                      <span className="flex items-center gap-1.5 text-xs text-ppl-sub"><span className="w-3 h-0.5 bg-blue-500 inline-block rounded"></span>지출금액</span>
-                      <span className="flex items-center gap-1.5 text-xs text-ppl-sub"><span className="w-3 h-0.5 bg-teal-500 inline-block rounded"></span>ROAS</span>
+              {/* 차트 — 높이 축소 */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-white rounded-xl border border-ppl-border px-4 pt-3 pb-2 shadow-sm">
+                  <div className="flex items-center gap-3 mb-2">
+                    <p className="text-xs font-semibold">지출금액 &amp; ROAS</p>
+                    <div className="flex items-center gap-2 ml-auto">
+                      <span className="flex items-center gap-1 text-[10px] text-ppl-sub"><span className="w-2.5 h-0.5 bg-blue-500 inline-block rounded"></span>지출</span>
+                      <span className="flex items-center gap-1 text-[10px] text-ppl-sub"><span className="w-2.5 h-0.5 bg-teal-500 inline-block rounded"></span>ROAS</span>
                     </div>
                   </div>
-                  <ResponsiveContainer width="100%" height={280}>
-                    <ComposedChart data={chartData}>
+                  <ResponsiveContainer width="100%" height={160}>
+                    <ComposedChart data={chartData} margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-                      <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
-                      <YAxis yAxisId="spend" orientation="left" tick={{ fontSize: 10, fill: '#3B82F6' }} axisLine={false} tickLine={false} tickFormatter={v => `₩${(v/10000).toFixed(0)}만`} />
-                      <YAxis yAxisId="roas" orientation="right" tick={{ fontSize: 10, fill: '#14B8A6' }} axisLine={false} tickLine={false} tickFormatter={v => v.toFixed(1)} />
+                      <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
+                      <YAxis yAxisId="spend" orientation="left"  tick={{ fontSize: 9, fill: '#3B82F6' }} axisLine={false} tickLine={false} tickFormatter={v => `${(v/10000).toFixed(0)}만`} width={36} />
+                      <YAxis yAxisId="roas"  orientation="right" tick={{ fontSize: 9, fill: '#14B8A6' }} axisLine={false} tickLine={false} tickFormatter={v => v.toFixed(1)} width={28} />
                       <Tooltip content={CustomTooltip} />
-                      <Bar yAxisId="spend" dataKey="spend" name="지출금액" fill="#3B82F6" fillOpacity={0.7} radius={[4, 4, 0, 0]} />
-                      <Line yAxisId="roas" type="monotone" dataKey="roas" name="ROAS" stroke="#14B8A6" strokeWidth={2.5} dot={{ r: 3, fill: '#14B8A6' }} />
+                      <Bar  yAxisId="spend" dataKey="spend" name="지출금액" fill="#3B82F6" fillOpacity={0.7} radius={[3, 3, 0, 0]} />
+                      <Line yAxisId="roas"  type="monotone" dataKey="roas" name="ROAS" stroke="#14B8A6" strokeWidth={2} dot={{ r: 2, fill: '#14B8A6' }} />
                     </ComposedChart>
                   </ResponsiveContainer>
                 </div>
 
-                {/* 오른쪽: CPC + CTR */}
-                <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
-                  <div className="flex items-center gap-4 mb-4">
-                    <p className="text-base font-semibold">CPC &amp; CTR</p>
-                    <div className="flex items-center gap-3 ml-auto">
-                      <span className="flex items-center gap-1.5 text-xs text-ppl-sub"><span className="w-3 h-0.5 bg-purple-500 inline-block rounded"></span>CPC</span>
-                      <span className="flex items-center gap-1.5 text-xs text-ppl-sub"><span className="w-3 h-0.5 bg-amber-500 inline-block rounded"></span>CTR</span>
+                <div className="bg-white rounded-xl border border-ppl-border px-4 pt-3 pb-2 shadow-sm">
+                  <div className="flex items-center gap-3 mb-2">
+                    <p className="text-xs font-semibold">CPC &amp; CTR</p>
+                    <div className="flex items-center gap-2 ml-auto">
+                      <span className="flex items-center gap-1 text-[10px] text-ppl-sub"><span className="w-2.5 h-0.5 bg-purple-500 inline-block rounded"></span>CPC</span>
+                      <span className="flex items-center gap-1 text-[10px] text-ppl-sub"><span className="w-2.5 h-0.5 bg-amber-500 inline-block rounded"></span>CTR</span>
                     </div>
                   </div>
-                  <ResponsiveContainer width="100%" height={280}>
-                    <ComposedChart data={chartData}>
+                  <ResponsiveContainer width="100%" height={160}>
+                    <ComposedChart data={chartData} margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-                      <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
-                      <YAxis yAxisId="cpc" orientation="left" tick={{ fontSize: 10, fill: '#A855F7' }} axisLine={false} tickLine={false} tickFormatter={v => `₩${v.toFixed(0)}`} />
-                      <YAxis yAxisId="ctr" orientation="right" tick={{ fontSize: 10, fill: '#F59E0B' }} axisLine={false} tickLine={false} tickFormatter={v => `${v.toFixed(2)}%`} />
+                      <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
+                      <YAxis yAxisId="cpc" orientation="left"  tick={{ fontSize: 9, fill: '#A855F7' }} axisLine={false} tickLine={false} tickFormatter={v => `₩${v.toFixed(0)}`} width={40} />
+                      <YAxis yAxisId="ctr" orientation="right" tick={{ fontSize: 9, fill: '#F59E0B' }} axisLine={false} tickLine={false} tickFormatter={v => `${v.toFixed(1)}%`} width={32} />
                       <Tooltip content={CustomTooltip} />
-                      <Bar yAxisId="cpc" dataKey="cpc" name="CPC" fill="#A855F7" fillOpacity={0.7} radius={[4, 4, 0, 0]} />
-                      <Line yAxisId="ctr" type="monotone" dataKey="ctr" name="CTR" stroke="#F59E0B" strokeWidth={2.5} dot={{ r: 3, fill: '#F59E0B' }} />
+                      <Bar  yAxisId="cpc" dataKey="cpc" name="CPC" fill="#A855F7" fillOpacity={0.7} radius={[3, 3, 0, 0]} />
+                      <Line yAxisId="ctr" type="monotone" dataKey="ctr" name="CTR" stroke="#F59E0B" strokeWidth={2} dot={{ r: 2, fill: '#F59E0B' }} />
                     </ComposedChart>
                   </ResponsiveContainer>
                 </div>
               </div>
+
+              {/* 캠페인별 기간 성과 테이블 (Meta / Google) */}
+              {['meta', 'google'].includes(selectedPlatform) && (
+                <div className="bg-white rounded-2xl border border-ppl-border p-5 shadow-sm">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <p className="text-sm font-semibold">캠페인별 기간 성과</p>
+                      <p className="text-[10px] text-ppl-sub mt-0.5">노출량 1회 이상 · 기간 합산</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5 bg-ppl-bg border border-ppl-border rounded-lg px-2.5 py-1.5">
+                        <div className="flex flex-col">
+                          <span className="text-[9px] text-ppl-sub mb-0.5">시작일</span>
+                          <input type="date" value={campaignDailySince} max={campaignDailyUntil}
+                            onChange={e => setCampaignDailySince(e.target.value)}
+                            className="text-[11px] border border-ppl-border rounded px-1.5 py-0.5 bg-white cursor-pointer" />
+                        </div>
+                        <span className="text-ppl-sub text-[10px] mt-3">~</span>
+                        <div className="flex flex-col">
+                          <span className="text-[9px] text-ppl-sub mb-0.5">종료일</span>
+                          <input type="date" value={campaignDailyUntil} min={campaignDailySince} max={today}
+                            onChange={e => setCampaignDailyUntil(e.target.value)}
+                            className="text-[11px] border border-ppl-border rounded px-1.5 py-0.5 bg-white cursor-pointer" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  {campaignDailyLoading ? (
+                    <div className="flex items-center justify-center h-20 text-ppl-sub text-sm">불러오는 중...</div>
+                  ) : campaignDailyData.length === 0 ? (
+                    <div className="flex items-center justify-center h-20 text-ppl-sub text-sm">해당 날짜에 집행된 캠페인이 없습니다.</div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-ppl-border">
+                            <th className="text-left py-2 px-3 text-xs font-medium text-ppl-sub">캠페인</th>
+                            <th className="text-right py-2 px-3 text-xs font-medium text-ppl-sub">노출</th>
+                            <th className="text-right py-2 px-3 text-xs font-medium text-ppl-sub">클릭</th>
+                            <th className="text-right py-2 px-3 text-xs font-medium text-ppl-sub">CTR</th>
+                            <th className="text-right py-2 px-3 text-xs font-medium text-ppl-sub">비용</th>
+                            <th className="text-right py-2 px-3 text-xs font-medium text-ppl-sub">CPC</th>
+                            <th className="text-right py-2 px-3 text-xs font-medium text-ppl-sub">전환</th>
+                            <th className="text-right py-2 px-3 text-xs font-medium text-ppl-sub">ROAS</th>
+                            <th className="text-right py-2 px-3 text-xs font-medium text-ppl-sub">CPA</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {campaignDailyData.map((row, i) => {
+                            const roasCls = row.roas >= 2 ? 'text-emerald-600 font-semibold' : row.roas >= 1.5 ? 'text-teal-600' : row.roas > 0 ? 'text-amber-600' : 'text-red-500';
+                            return (
+                              <tr key={row.campaignId || i} className="border-b border-ppl-border/50 hover:bg-ppl-bg/60 transition-colors">
+                                <td className="py-2.5 px-3 text-[11px] text-ppl-text font-medium leading-snug">{row.campaignName}</td>
+                                <td className="py-2.5 px-3 text-xs text-right text-ppl-sub">{row.impressions.toLocaleString()}</td>
+                                <td className="py-2.5 px-3 text-xs text-right text-ppl-sub">{row.clicks.toLocaleString()}</td>
+                                <td className="py-2.5 px-3 text-xs text-right text-ppl-sub">{row.ctr.toFixed(2)}%</td>
+                                <td className="py-2.5 px-3 text-xs text-right text-blue-600 font-medium">₩{krwFmt.format(Math.round(row.spend))}</td>
+                                <td className="py-2.5 px-3 text-xs text-right text-ppl-sub">₩{krwFmt.format(Math.round(row.cpc))}</td>
+                                <td className="py-2.5 px-3 text-xs text-right text-ppl-sub">{row.conversions.toLocaleString()}</td>
+                                <td className={`py-2.5 px-3 text-xs text-right ${roasCls}`}>{row.roas.toFixed(2)}</td>
+                                <td className="py-2.5 px-3 text-xs text-right text-ppl-sub">{row.cpa > 0 ? `₩${krwFmt.format(Math.round(row.cpa))}` : '-'}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                        <tfoot>
+                          {(() => {
+                            const t = campaignDailyData.reduce((a, r) => ({
+                              impressions: a.impressions + r.impressions,
+                              clicks:      a.clicks      + r.clicks,
+                              spend:       a.spend       + r.spend,
+                              conversions: a.conversions + r.conversions,
+                              value:       a.value       + r.conversionValue,
+                            }), { impressions: 0, clicks: 0, spend: 0, conversions: 0, value: 0 });
+                            const tCtr  = t.impressions > 0 ? (t.clicks / t.impressions) * 100 : 0;
+                            const tCpc  = t.clicks > 0 ? t.spend / t.clicks : 0;
+                            const tRoas = t.spend > 0 ? t.value / t.spend : 0;
+                            const tCpa  = t.conversions > 0 ? t.spend / t.conversions : 0;
+                            const roasCls = tRoas >= 2 ? 'text-emerald-600 font-bold' : tRoas >= 1.5 ? 'text-teal-600 font-bold' : tRoas > 0 ? 'text-amber-600 font-bold' : 'text-red-500 font-bold';
+                            return (
+                              <tr className="border-t-2 border-ppl-border bg-ppl-bg">
+                                <td className="py-2.5 px-3 text-xs font-bold text-ppl-text">합계 ({campaignDailyData.length}개 캠페인)</td>
+                                <td className="py-2.5 px-3 text-xs text-right font-bold text-ppl-text">{t.impressions.toLocaleString()}</td>
+                                <td className="py-2.5 px-3 text-xs text-right font-bold text-ppl-text">{t.clicks.toLocaleString()}</td>
+                                <td className="py-2.5 px-3 text-xs text-right font-bold text-ppl-text">{tCtr.toFixed(2)}%</td>
+                                <td className="py-2.5 px-3 text-xs text-right font-bold text-blue-700">₩{krwFmt.format(Math.round(t.spend))}</td>
+                                <td className="py-2.5 px-3 text-xs text-right font-bold text-ppl-text">₩{krwFmt.format(Math.round(tCpc))}</td>
+                                <td className="py-2.5 px-3 text-xs text-right font-bold text-ppl-text">{t.conversions.toLocaleString()}</td>
+                                <td className={`py-2.5 px-3 text-xs text-right ${roasCls}`}>{tRoas.toFixed(2)}</td>
+                                <td className="py-2.5 px-3 text-xs text-right font-bold text-ppl-text">{tCpa > 0 ? `₩${krwFmt.format(Math.round(tCpa))}` : '-'}</td>
+                              </tr>
+                            );
+                          })()}
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* AI 인사이트 카드 (Meta 전용) */}
+              {selectedPlatform === 'meta' && (
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <svg width="14" height="14" fill="none" stroke="#14B8A6" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><path d="M12 8v4l3 3"/></svg>
+                    <p className="text-sm font-semibold text-ppl-text">AI 소재 인사이트</p>
+                    <span className="text-[10px] text-ppl-sub">최근 7일 기준</span>
+                    {insightsLoading && <span className="text-[10px] text-ppl-teal ml-1">분석 중...</span>}
+                  </div>
+                  {insightsLoading && !creativeInsights ? (
+                    <div className="grid grid-cols-2 gap-3">
+                      {[...Array(4)].map((_, i) => (
+                        <div key={i} className="bg-white rounded-xl border border-ppl-border p-4 animate-pulse">
+                          <div className="h-3 bg-gray-100 rounded w-1/2 mb-3"></div>
+                          <div className="space-y-2">
+                            {[...Array(3)].map((_, j) => <div key={j} className="h-2.5 bg-gray-100 rounded w-full"></div>)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : creativeInsights && (
+                    <div className="grid grid-cols-2 gap-3">
+                      {[
+                        {
+                          key: 'surge', icon: '🚀', title: '노출·클릭 급증 소재',
+                          color: 'border-blue-100 bg-blue-50/40',
+                          badge: 'bg-blue-100 text-blue-700',
+                          metric: r => `↑${r.growthRate >= 99 ? '신규' : `${r.growthRate.toFixed(1)}x`} · ${(r.impressions/1000).toFixed(1)}K 노출`,
+                        },
+                        {
+                          key: 'highPerf', icon: '⭐', title: '고성과 소재',
+                          color: 'border-emerald-100 bg-emerald-50/40',
+                          badge: 'bg-emerald-100 text-emerald-700',
+                          metric: r => `ROAS ${r.roas.toFixed(2)} · 전환 ${r.conversions}건`,
+                        },
+                        {
+                          key: 'waste', icon: '⚠️', title: '전환 없는 낭비 소재',
+                          color: 'border-red-100 bg-red-50/40',
+                          badge: 'bg-red-100 text-red-600',
+                          metric: r => `₩${krwFmt.format(Math.round(r.spend))} 소진 · 전환 0`,
+                        },
+                        {
+                          key: 'highCpa', icon: '💸', title: '고CPA 소재',
+                          color: 'border-amber-100 bg-amber-50/40',
+                          badge: 'bg-amber-100 text-amber-700',
+                          metric: r => `CPA ₩${krwFmt.format(Math.round(r.cpa))} · ${r.conversions}건`,
+                        },
+                      ].map(card => {
+                        const items = creativeInsights[card.key] || [];
+                        return (
+                          <div key={card.key} className={`rounded-xl border p-4 ${card.color}`}>
+                            <div className="flex items-center gap-1.5 mb-3">
+                              <span className="text-sm">{card.icon}</span>
+                              <p className="text-xs font-semibold text-ppl-text">{card.title}</p>
+                            </div>
+                            {items.length === 0 ? (
+                              <p className="text-[11px] text-ppl-sub py-2">해당 소재 없음</p>
+                            ) : (
+                              <div className="space-y-2.5">
+                                {items.map((r, i) => (
+                                  <div key={r.adId || i} className="flex flex-col gap-0.5">
+                                    <div className="flex items-start gap-1.5">
+                                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 mt-0.5 ${card.badge}`}>{i + 1}</span>
+                                      <p className="text-[11px] font-medium text-ppl-text leading-snug">{r.adName}</p>
+                                    </div>
+                                    <p className="text-[10px] text-ppl-sub pl-5">{card.metric(r)}</p>
+                                    {r.comment && (
+                                      <p className="text-[10px] text-ppl-teal pl-5 italic">"{r.comment}"</p>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -4954,7 +5518,6 @@
           }
         };
 
-        const QUICK = ['성과 보여줘', '캠페인 목록', '최적화 추천', '알림 확인'];
 
         return (
           <>
@@ -4962,7 +5525,7 @@
             <button
               onClick={() => setOpen(o => !o)}
               className="fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full bg-ppl-teal text-white shadow-lg hover:bg-teal-600 transition-all flex items-center justify-center"
-              title="AI 어시스턴트"
+              title="AI 광고 어시스턴트"
             >
               {open
                 ? <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -4972,11 +5535,11 @@
 
             {/* Popup */}
             {open && (
-              <div className="fixed bottom-24 right-6 z-50 w-80 bg-white rounded-2xl shadow-2xl border border-ppl-border flex flex-col overflow-hidden animate-in" style={{height: '460px'}}>
+              <div className="fixed bottom-24 right-6 z-50 bg-white rounded-2xl shadow-2xl border border-ppl-border flex flex-col overflow-hidden animate-in" style={{width: '480px', height: '600px'}}>
                 {/* Header */}
                 <div className="px-4 py-3 bg-ppl-teal flex items-center gap-2 shrink-0">
                   <svg width="16" height="16" fill="none" stroke="white" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                  <span className="text-white text-sm font-semibold flex-1">AI 어시스턴트</span>
+                  <span className="text-white text-sm font-semibold flex-1">AI 광고 어시스턴트</span>
                   <button onClick={() => setOpen(false)} className="text-white/70 hover:text-white transition-colors">
                     <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                   </button>
@@ -4986,15 +5549,7 @@
                 <div className="flex-1 overflow-y-auto scrollbar-thin px-4 py-3 space-y-3">
                   {history.length === 0 && (
                     <div className="text-center pt-6">
-                      <p className="text-xs text-ppl-sub mb-4">무엇이든 물어보세요</p>
-                      <div className="flex flex-wrap gap-2 justify-center">
-                        {QUICK.map(q => (
-                          <button key={q} onClick={() => send(q)}
-                            className="px-3 py-1.5 text-xs rounded-full border border-ppl-border text-ppl-sub hover:bg-ppl-teal hover:text-white hover:border-ppl-teal transition-colors">
-                            {q}
-                          </button>
-                        ))}
-                      </div>
+                      <p className="text-xs text-ppl-sub">무엇이든 물어보세요</p>
                     </div>
                   )}
                   {history.map((m, i) => (
@@ -5059,7 +5614,6 @@
               {/* Platform Selector */}
               <div className="flex items-center gap-1 bg-ppl-bg rounded-xl p-1 border border-ppl-border">
                 {[
-                  { id: 'all', label: 'All' },
                   { id: 'meta', label: 'Meta' },
                   { id: 'google', label: 'Google' },
                 ].map(p => (

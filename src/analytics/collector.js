@@ -14,6 +14,21 @@ import { krwFmt } from '../utils/format.js';
 
 const CREATIVE_IMAGE_DIR = path.join(process.cwd(), 'data', 'creative-images');
 
+async function runTx(fn) {
+  const MAX = 8;
+  for (let i = 1; i <= MAX; i++) {
+    try {
+      return db.transaction(fn).immediate();
+    } catch (e) {
+      if ((e.code === 'SQLITE_BUSY' || e.code === 'SQLITE_LOCKED') && i < MAX) {
+        await new Promise(r => setTimeout(r, i * 200));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
 export class DataCollector extends EventEmitter {
   constructor() {
     super();
@@ -27,51 +42,28 @@ export class DataCollector extends EventEmitter {
     };
   }
 
-  /** Initialize DB and start scheduled collection */
-  start(intervalMinutes = 15) {
+  /** Initialize DB only — 자동 수집 없음, 수동 트리거(/api/collect)로만 실행 */
+  start() {
     initDatabase();
-    const interval = parseInt(process.env.COLLECT_INTERVAL_MINUTES || intervalMinutes);
-
-    // Run immediately on start
-    this.collectAll().catch(err => logger.error('Initial collection failed', { error: err.message }));
-
-    this._scheduleTask(interval);
-    logger.info(`Data collector started — every ${interval} minutes`);
+    logger.info('Data collector initialized (manual trigger mode — no auto schedule)');
   }
 
-  _scheduleTask(interval) {
-    if (this.cronTask) this.cronTask.stop();
-    this.cronTask = cron.schedule(`*/${interval} * * * *`, () => {
-      this.collectAll().catch(err => logger.error('Scheduled collection failed', { error: err.message }));
-    });
-    this.intervalMinutes = interval;
-  }
-
-  reschedule(newIntervalMinutes) {
-    const interval = Math.max(1, Math.min(parseInt(newIntervalMinutes) || 15, 1440));
-    process.env.COLLECT_INTERVAL_MINUTES = String(interval);
-    this._scheduleTask(interval);
-    logger.info(`Data collector rescheduled — every ${interval} minutes`);
-  }
-
-  /** Collect from all platforms */
+  /** Collect from all platforms (sequential to avoid SQLite write conflicts) */
   async collectAll() {
     const timestamp = new Date().toISOString();
     logger.info('Starting data collection cycle', { timestamp });
 
-    const results = await Promise.allSettled([
-      this._collectMeta(),
-      this._collectGoogle(),
-      this._collectTikTok(),
-    ]);
-
-    const platformNames = ['Meta', 'Google', 'TikTok'];
-    results.forEach((r, i) => {
-      const platform = platformNames[i];
-      if (r.status === 'rejected') {
-        logger.error(`${platform} collection failed`, { error: r.reason?.message });
+    for (const [platform, fn] of [
+      ['Meta',   () => this._collectMeta()],
+      ['Google', () => this._collectGoogle()],
+      ['TikTok', () => this._collectTikTok()],
+    ]) {
+      try {
+        await fn();
+      } catch (err) {
+        logger.error(`${platform} collection failed`, { error: err.message });
       }
-    });
+    }
 
     // Run analysis after collection (disabled: SLACK_ALERTS_PAUSED=true)
     if (process.env.SLACK_ALERTS_PAUSED !== 'true') {
@@ -114,7 +106,7 @@ export class DataCollector extends EventEmitter {
         collected_at=datetime('now')
     `);
 
-    const transaction = db.transaction(() => {
+    await runTx(() => {
       for (const c of rawCampaigns) {
         const m = mapCampaign(c);
         upsertCampaign.run(m.uid, platform, m.platformId, m.name, m.status, m.budget, m.stopTime || null);
@@ -129,8 +121,6 @@ export class DataCollector extends EventEmitter {
           row.conversions, row.conversionValue, row.ctr, row.cpc, row.cpm, roas, cpa);
       }
     });
-
-    transaction();
     logger.info(`${platform}: synced ${rawCampaigns.length} campaigns, ${rawPerf.length} perf rows`);
   }
 
@@ -157,13 +147,22 @@ export class DataCollector extends EventEmitter {
     const rows = await this.meta.getAdInsights({ datePreset: 'today' });
     const today = new Date().toISOString().split('T')[0];
 
-    // Resolve creative image URLs for all ads
-    const adIds = rows.map(r => r.adId);
+    // 이미 image_url이 있는 ad는 제외 — 불필요한 API 호출로 rate limit 방지
+    const allAdIds = rows.map(r => r.adId);
+    const existingUrls = db.prepare(
+      `SELECT DISTINCT ad_id FROM ad_performance WHERE platform = 'meta' AND image_url IS NOT NULL AND image_url != ''`
+    ).all().map(r => r.ad_id);
+    const existingSet = new Set(existingUrls);
+    const adIds = allAdIds.filter(id => !existingSet.has(id));
+
     let imageMap = new Map();
-    try {
-      imageMap = await this.meta.getAdCreativeImages(adIds);
-    } catch (err) {
-      logger.warn('Failed to fetch creative images, continuing without', { error: err.message });
+    if (adIds.length > 0) {
+      try {
+        imageMap = await this.meta.getAdCreativeImages(adIds);
+        logger.info(`Fetched creative images for ${adIds.length} new ads (${allAdIds.length - adIds.length} skipped — already cached)`);
+      } catch (err) {
+        logger.warn('Failed to fetch creative images, continuing without', { error: err.message });
+      }
     }
 
     const upsert = db.prepare(`
@@ -179,7 +178,7 @@ export class DataCollector extends EventEmitter {
         collected_at=datetime('now')
     `);
 
-    const transaction = db.transaction(() => {
+    await runTx(() => {
       for (const r of rows) {
         upsert.run(
           r.adId, r.adName, r.adsetId, r.adsetName,
@@ -190,7 +189,6 @@ export class DataCollector extends EventEmitter {
         );
       }
     });
-    transaction();
     logger.info(`meta ad-level: synced ${rows.length} ad rows (${imageMap.size} with images)`);
 
     // 이미지 로컬 캐시 (비동기 백그라운드 — 수집 사이클 블로킹 없음)
@@ -281,7 +279,7 @@ export class DataCollector extends EventEmitter {
         collected_at=datetime('now')
     `);
 
-    const transaction = db.transaction(() => {
+    await runTx(() => {
       for (const r of rows) {
         upsert.run(
           r.assetId, r.assetName, r.assetText, r.imageUrl, r.youtubeId,
@@ -291,7 +289,6 @@ export class DataCollector extends EventEmitter {
         );
       }
     });
-    transaction();
     logger.info(`google asset grades: synced ${rows.length} rows`);
   }
 
@@ -313,7 +310,7 @@ export class DataCollector extends EventEmitter {
         collected_at=datetime('now')
     `);
 
-    const transaction = db.transaction(() => {
+    await runTx(() => {
       for (const r of rows) {
         const roas = r.spend > 0 ? r.conversionValue / r.spend : 0;
         const cpa = r.conversions > 0 ? r.spend / r.conversions : 0;
@@ -325,7 +322,6 @@ export class DataCollector extends EventEmitter {
         );
       }
     });
-    transaction();
     logger.info(`google PMAX: synced ${rows.length} asset group rows`);
   }
 
@@ -346,7 +342,7 @@ export class DataCollector extends EventEmitter {
         collected_at=datetime('now')
     `);
 
-    const transaction = db.transaction(() => {
+    await runTx(() => {
       for (const r of rows) {
         const roas = r.spend > 0 ? r.conversionValue / r.spend : 0;
         const cpa = r.conversions > 0 ? r.spend / r.conversions : 0;
@@ -358,7 +354,6 @@ export class DataCollector extends EventEmitter {
         );
       }
     });
-    transaction();
     logger.info(`google ad-level: synced ${rows.length} ad rows`);
   }
 

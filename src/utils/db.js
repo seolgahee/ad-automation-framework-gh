@@ -8,9 +8,14 @@ const DB_PATH = process.env.DB_PATH || './data/ads.db';
 // Ensure data directory exists
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
-const db = new Database(DB_PATH);
+const db = new Database(DB_PATH, { timeout: 30000 });
+db.pragma('busy_timeout = 30000');
 db.pragma('journal_mode = WAL');
+db.pragma('synchronous = NORMAL');
+db.pragma('wal_autocheckpoint = 100');
 db.pragma('foreign_keys = ON');
+
+try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch (_) {}
 
 /** Migrate ad_performance: add image_url column if missing */
 function migrateAddImageUrl() {
@@ -319,19 +324,55 @@ export function initDatabase() {
 
     -- 소재 라이브러리 (배너 이미지 BLOB 영구 저장)
     CREATE TABLE IF NOT EXISTS creative_library (
-      id            TEXT PRIMARY KEY,
-      name          TEXT NOT NULL,
-      original_name TEXT NOT NULL,
-      width         INTEGER,
-      height        INTEGER,
-      file_size     INTEGER,
-      mime_type     TEXT DEFAULT 'image/jpeg',
-      image_data    BLOB,
-      ad_id         TEXT,
-      created_at    TEXT DEFAULT (datetime('now'))
+      id                TEXT PRIMARY KEY,
+      name              TEXT NOT NULL,
+      original_name     TEXT NOT NULL,
+      width             INTEGER,
+      height            INTEGER,
+      file_size         INTEGER,
+      mime_type         TEXT DEFAULT 'image/jpeg',
+      image_data        BLOB,
+      ad_id             TEXT,
+      persona           TEXT,
+      desire            TEXT,
+      awareness         TEXT,
+      checksum          TEXT,
+      processing_status TEXT DEFAULT 'new',
+      meta_uploaded     INTEGER DEFAULT 0,
+      google_uploaded   INTEGER DEFAULT 0,
+      created_at        TEXT DEFAULT (datetime('now')),
+      updated_at        TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_creative_library_created ON creative_library(created_at);
+
+    -- 크리에이티브 파이프라인: 플랫폼별 업로드 매핑
+    CREATE TABLE IF NOT EXISTS platform_asset_map (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      library_id       TEXT NOT NULL REFERENCES creative_library(id),
+      platform         TEXT NOT NULL,
+      external_asset_id TEXT NOT NULL,
+      asset_type       TEXT,
+      status           TEXT NOT NULL DEFAULT 'success',
+      uploaded_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(platform, external_asset_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_asset_map_library ON platform_asset_map(library_id);
+    CREATE INDEX IF NOT EXISTS idx_asset_map_platform ON platform_asset_map(platform);
+
+    -- 크리에이티브 파이프라인: 작업 로그
+    CREATE TABLE IF NOT EXISTS job_log (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_type   TEXT NOT NULL,
+      library_id TEXT REFERENCES creative_library(id),
+      status     TEXT NOT NULL,
+      message    TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_job_log_library ON job_log(library_id);
+    CREATE INDEX IF NOT EXISTS idx_job_log_type ON job_log(job_type);
   `);
 
   logger.info('Database initialized', { path: DB_PATH });

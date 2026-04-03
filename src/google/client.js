@@ -1035,6 +1035,7 @@ export class GoogleAdsClient extends BaseAdsClient {
         SELECT
           campaign.id,
           campaign.name,
+          segments.date,
           metrics.impressions,
           metrics.clicks,
           metrics.cost_micros,
@@ -1075,6 +1076,7 @@ export class GoogleAdsClient extends BaseAdsClient {
     return rows.map(row => ({
       campaignId: String(row.campaign.id),
       campaignName: row.campaign.name,
+      date: row.segments?.date || null,
       adGroupId: row.ad_group?.id ? String(row.ad_group.id) : null,
       adGroupName: row.ad_group?.name || null,
       impressions: Number(row.metrics.impressions || 0),
@@ -1124,6 +1126,7 @@ export class GoogleAdsClient extends BaseAdsClient {
       WHERE segments.date BETWEEN '${from}' AND '${to}'
         AND campaign.status != 'REMOVED'
         AND ad_group_ad.status != 'REMOVED'
+        AND metrics.impressions > 0
       ORDER BY metrics.cost_micros DESC
     `;
 
@@ -1142,6 +1145,7 @@ export class GoogleAdsClient extends BaseAdsClient {
       FROM asset_group
       WHERE segments.date BETWEEN '${from}' AND '${to}'
         AND campaign.status != 'REMOVED'
+        AND metrics.impressions > 0
       ORDER BY metrics.cost_micros DESC
     `;
 
@@ -1327,9 +1331,6 @@ export class GoogleAdsClient extends BaseAdsClient {
 
     let conditions = [
       `segments.date BETWEEN '${from}' AND '${to}'`,
-      `campaign.status = 'ENABLED'`,
-      `asset_group.status = 'ENABLED'`,
-      `asset_group_asset.status = 'ENABLED'`,
       `asset_group_asset.field_type IN ('SQUARE_MARKETING_IMAGE','PORTRAIT_MARKETING_IMAGE','MARKETING_IMAGE','YOUTUBE_VIDEO')`,
     ];
     if (campaignIds.length > 0) {

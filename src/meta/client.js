@@ -40,11 +40,16 @@ export class MetaAdsClient extends BaseAdsClient {
       'id', 'name', 'status', 'effective_status', 'objective', 'daily_budget',
       'lifetime_budget', 'start_time', 'stop_time', 'updated_time',
     ];
-    const params = { effective_status: statusFilter };
+    const params = { effective_status: statusFilter, limit: 500 };
 
-    const campaigns = await this._withTimeout(this.account.getCampaigns(fields, params), 'getCampaigns');
-    logger.info(`Fetched ${campaigns.length} Meta campaigns`);
-    return campaigns.map(c => c._data);
+    let cursor = await this._withTimeout(this.account.getCampaigns(fields, params), 'getCampaigns');
+    const all = [...cursor];
+    while (cursor.hasNext()) {
+      cursor = await this._withTimeout(cursor.next(), 'getCampaigns:next');
+      all.push(...cursor);
+    }
+    logger.info(`Fetched ${all.length} Meta campaigns`);
+    return all.map(c => c._data);
   }
 
   /** Create a new campaign */
@@ -70,7 +75,7 @@ export class MetaAdsClient extends BaseAdsClient {
     const params = {};
 
     if (updates.dailyBudget !== undefined) {
-      params.daily_budget = Math.round(updates.dailyBudget * 100);
+      params.daily_budget = Math.round(updates.dailyBudget); // KRW: 보조단위 없음, 그대로 전달
     }
     if (updates.status) params.status = updates.status;
     if (updates.name) params.name = updates.name;
@@ -285,11 +290,13 @@ export class MetaAdsClient extends BaseAdsClient {
 
           const hashes = [];
 
+          // thumbnail_url은 크리에이티브의 실제 CDN 직접 URL (고해상도) — 항상 저장
+          if (adData.thumbnail_url) {
+            fallbackThumbnails.set(adId, adData.thumbnail_url);
+          }
+
           if (adData.asset_feed_spec?.images?.length > 0) {
-            // DCO 광고: asset_feed_spec의 해시 선택은 부정확함 — thumbnail_url 사용
-            if (adData.thumbnail_url) {
-              fallbackThumbnails.set(adId, adData.thumbnail_url);
-            }
+            // DCO 광고: thumbnail_url 이미 저장됨
           } else if (adData.image_hash) {
             hashes.push(adData.image_hash);
           } else if (adData.object_story_spec?.link_data?.image_hash) {
@@ -305,8 +312,6 @@ export class MetaAdsClient extends BaseAdsClient {
             for (const h of hashes) {
               hashRefCount.set(h, (hashRefCount.get(h) || 0) + 1);
             }
-          } else if (adData.thumbnail_url && !fallbackThumbnails.has(adId)) {
-            fallbackThumbnails.set(adId, adData.thumbnail_url);
           }
         }
       } catch (err) {
@@ -326,39 +331,39 @@ export class MetaAdsClient extends BaseAdsClient {
       selectedHashToAdIds.get(best).push(adId);
     }
 
-    // Bulk resolve hashes → permalink_url via AdImage API
-    const uniqueHashes = [...selectedHashToAdIds.keys()];
-    if (uniqueHashes.length > 0) {
+    // thumbnail_url (크리에이티브 직접 CDN URL)을 우선 사용
+    // AdImages API의 url_128(128px)보다 thumbnail_url이 고해상도
+    for (const [adId, thumbUrl] of fallbackThumbnails) {
+      imageMap.set(adId, thumbUrl);
+    }
+
+    // thumbnail_url 없는 광고는 AdImages API url_128로 보완
+    const needsAdImages = [...selectedHashToAdIds.entries()]
+      .filter(([, adIds]) => adIds.some(id => !imageMap.has(id)));
+    if (needsAdImages.length > 0) {
+      const missingHashes = needsAdImages.map(([hash]) => hash);
       try {
         const hashBatchSize = 50;
-        for (let i = 0; i < uniqueHashes.length; i += hashBatchSize) {
-          const hashBatch = uniqueHashes.slice(i, i + hashBatchSize);
+        for (let i = 0; i < missingHashes.length; i += hashBatchSize) {
+          const hashBatch = missingHashes.slice(i, i + hashBatchSize);
           const response = await this._withTimeout(
             this.api.call('GET', [this.accountId, 'adimages'], {
               hashes: JSON.stringify(hashBatch),
-              fields: 'url,hash',
+              fields: 'url_128,hash',
             }),
             'getAdImages'
           );
-
           const images = response?.data || [];
           for (const img of images) {
-            if (img.url && selectedHashToAdIds.has(img.hash)) {
+            if (img.url_128 && selectedHashToAdIds.has(img.hash)) {
               for (const adId of selectedHashToAdIds.get(img.hash)) {
-                imageMap.set(adId, img.url);
+                if (!imageMap.has(adId)) imageMap.set(adId, img.url_128);
               }
             }
           }
         }
       } catch (err) {
         logger.warn('Failed to resolve image hashes to CDN URLs', { error: err.message });
-      }
-    }
-
-    // Apply thumbnail fallbacks for ads without a resolved CDN URL
-    for (const [adId, thumbUrl] of fallbackThumbnails) {
-      if (!imageMap.has(adId)) {
-        imageMap.set(adId, thumbUrl);
       }
     }
 
@@ -373,8 +378,9 @@ export class MetaAdsClient extends BaseAdsClient {
     level = 'campaign',
     datePreset,
     timeRange,
+    timeIncrement,  // 1 = 일별 breakdown
     fields = [
-      'campaign_id', 'campaign_name', 'impressions', 'clicks',
+      'campaign_id', 'campaign_name', 'date_start', 'impressions', 'clicks',
       'spend', 'actions', 'action_values', 'ctr', 'cpc', 'cpm',
       'cost_per_action_type', 'reach', 'frequency',
     ],
@@ -383,17 +389,26 @@ export class MetaAdsClient extends BaseAdsClient {
     const params = { level };
 
     if (datePreset) {
-      params.date_preset = datePreset; // e.g. 'today', 'yesterday', 'last_7d'
+      params.date_preset = datePreset;
     } else if (timeRange) {
-      params.time_range = timeRange;   // { since: 'YYYY-MM-DD', until: 'YYYY-MM-DD' }
+      params.time_range = timeRange;
     } else {
       params.date_preset = 'today';
     }
 
-    const insights = await this._withTimeout(this.account.getInsights(fields, params), 'getInsights');
-    logger.info(`Fetched ${insights.length} Meta insight rows`, { level });
+    if (timeIncrement) params.time_increment = timeIncrement;
+    params.limit = 500;
 
-    return insights.map(row => {
+    // 전체 페이지 순회 (기본 페이지 크기 25로 잘리는 문제 방지)
+    let cursor = await this._withTimeout(this.account.getInsights(fields, params), 'getInsights');
+    const allInsights = [...cursor];
+    while (cursor.hasNext()) {
+      cursor = await this._withTimeout(cursor.next(), 'getInsights:next');
+      allInsights.push(...cursor);
+    }
+    logger.info(`Fetched ${allInsights.length} Meta insight rows`, { level });
+
+    return allInsights.map(row => {
       const data = row._data;
       // Extract conversions from actions array
       const purchases = data.actions?.find(a => a.action_type === 'purchase');
@@ -402,6 +417,7 @@ export class MetaAdsClient extends BaseAdsClient {
       return {
         campaignId: data.campaign_id,
         campaignName: data.campaign_name,
+        dateStart: data.date_start || null,
         impressions: parseInt(data.impressions || 0),
         clicks: parseInt(data.clicks || 0),
         spend: parseFloat(data.spend || 0),
@@ -428,14 +444,26 @@ export class MetaAdsClient extends BaseAdsClient {
       'ad_id', 'ad_name', 'adset_id', 'adset_name', 'campaign_id', 'campaign_name',
       'impressions', 'clicks', 'spend', 'actions', 'action_values', 'ctr', 'cpc', 'cpm',
     ];
-    const params = { level: 'ad' };
+    const params = {
+      level: 'ad',
+      action_attribution_windows: ['7d_click', '1d_view'],  // Ads Manager 기본값과 동일
+    };
     if (timeRange) {
       params.time_range = timeRange;
     } else {
       params.date_preset = datePreset;
     }
 
-    const insights = await this._withTimeout(this.account.getInsights(fields, params), 'getAdInsights');
+    params.limit = 500;  // 페이지당 최대 행 수
+    params.filtering = [{ field: 'impressions', operator: 'GREATER_THAN', value: 0 }];
+
+    // 전체 페이지 순회
+    let cursor = await this._withTimeout(this.account.getInsights(fields, params), 'getAdInsights');
+    const insights = [...cursor];
+    while (cursor.hasNext()) {
+      cursor = await this._withTimeout(cursor.next(), 'getAdInsights:next');
+      insights.push(...cursor);
+    }
     logger.info(`Fetched ${insights.length} Meta ad-level insight rows`);
 
     return insights.map(row => {
@@ -465,6 +493,49 @@ export class MetaAdsClient extends BaseAdsClient {
         cpa: conversions > 0 ? spend / conversions : 0,
       };
     });
+  }
+
+  /**
+   * ad_id 배열 → image_hash 맵 반환 (platform_asset_map 저장용)
+   * @param {string[]} adIds
+   * @returns {Promise<Map<string, string>>} adId → image_hash
+   */
+  async getAdImageHashes(adIds) {
+    this._ensureConfigured();
+    if (!adIds?.length) return new Map();
+
+    const result = new Map();
+    const batchSize = 50;
+
+    for (let i = 0; i < adIds.length; i += batchSize) {
+      const batch = adIds.slice(i, i + batchSize);
+      try {
+        const params = {
+          ids: batch.join(','),
+          fields: ['id', 'creative{image_hash,object_story_spec}'].join(','),
+        };
+        const response = await this._withTimeout(
+          this.api.call('GET', [''], params),
+          'getAdImageHashes'
+        );
+        for (const adId of batch) {
+          const creative = response?.[adId]?.creative;
+          if (!creative) continue;
+          const hash =
+            creative.image_hash ||
+            creative.object_story_spec?.link_data?.image_hash ||
+            creative.object_story_spec?.photo_data?.image_hash ||
+            creative.object_story_spec?.video_data?.image_hash ||
+            null;
+          if (hash) result.set(adId, hash);
+        }
+      } catch (err) {
+        logger.warn(`getAdImageHashes batch failed at index ${i}`, { error: err.message });
+      }
+    }
+
+    logger.info(`getAdImageHashes: ${result.size}/${adIds.length} hashes fetched`);
+    return result;
   }
 }
 

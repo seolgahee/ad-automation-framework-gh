@@ -2823,11 +2823,31 @@
         const loadMetaAdList = () => {
           apiFetch(`${API}/meta/ad-list`)
             .then(r => r.json())
-            .then(data => setMetaAdList(Array.isArray(data) ? data : []))
+            .then(data => {
+              const list = Array.isArray(data) ? data : [];
+              list.sort((a, b) => (b.ad_name || '').localeCompare(a.ad_name || ''));
+              setMetaAdList(list);
+            })
             .catch(() => {});
         };
 
-        React.useEffect(() => { loadLibrary(); loadMetaAdList(); }, []);
+        React.useEffect(() => {
+          loadLibrary();
+          loadMetaAdList();
+          const ws = new WebSocket(WS_URL);
+          ws.onmessage = (e) => {
+            try {
+              const msg = JSON.parse(e.data);
+              if (msg.type === 'pda_analyzed') {
+                setLibrary(prev => prev.map(i => i.id === msg.data.id
+                  ? { ...i, persona: msg.data.persona, desire: msg.data.desire, awareness: msg.data.awareness }
+                  : i
+                ));
+              }
+            } catch {}
+          };
+          return () => ws.close();
+        }, []);
 
         const saveAdMapping = async (libId, adId) => {
           await apiFetch(`${API}/creative-library/${libId}/ad-mapping`, {
@@ -3421,26 +3441,12 @@
       const [uploadResult, setUploadResult] = useState(null);
 
       const PDA_OPTIONS = {
-        persona: [
-          { value: 'busy_professional', label: '야근하는 직장인' },
-          { value: 'tired_parent',      label: '육아에 지친 부모' },
-          { value: 'budget_conscious',  label: '절약형 소비자' },
-          { value: 'health_seeker',     label: '건강 관심층' },
-          { value: 'trend_follower',    label: '트렌드 팔로워' },
-        ],
-        desire: [
-          { value: 'efficiency',         label: '효율/시간 절약' },
-          { value: 'social_recognition', label: '사회적 인정' },
-          { value: 'safety_trust',       label: '안전/신뢰' },
-          { value: 'saving',             label: '절약/가성비' },
-          { value: 'achievement',        label: '성취/자기계발' },
-        ],
         awareness: [
-          { value: 'unaware',        label: 'Unaware — 문제 인식 전' },
-          { value: 'problem_aware',  label: 'Problem-aware — 문제 인식' },
-          { value: 'solution_aware', label: 'Solution-aware — 해결책 탐색' },
-          { value: 'product_aware',  label: 'Product-aware — 제품 인지' },
-          { value: 'ready_to_buy',   label: 'Ready-to-buy — 구매 준비' },
+          { value: '문제 인식 전', label: '문제 인식 전' },
+          { value: '문제 인식',    label: '문제 인식' },
+          { value: '해결책 탐색',  label: '해결책 탐색' },
+          { value: '제품 인지',    label: '제품 인지' },
+          { value: '구매 준비',    label: '구매 준비' },
         ],
       };
 
@@ -3471,6 +3477,11 @@
       // ─── Creative Insights state ───
       const [creativeInsights, setCreativeInsights] = useState(null);
       const [insightsLoading, setInsightsLoading] = useState(false);
+
+      // ─── PDA Insight state ───
+      const [pdaInsight, setPdaInsight] = useState(null);
+      const [pdaInsightLoading, setPdaInsightLoading] = useState(false);
+      const [pdaInsightCampaignId, setPdaInsightCampaignId] = useState('');
 
       // ─── Campaign Daily Performance state ───
       const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
@@ -4054,27 +4065,25 @@
                 {/* Persona */}
                 <div>
                   <label className="block text-xs font-medium text-ppl-text mb-1.5">Persona — 누구에게</label>
-                  <select
+                  <input
+                    type="text"
+                    placeholder="예: 다이어트 중인 20대 여성"
                     value={uploadForm.persona_tag}
                     onChange={e => setUploadForm(prev => ({ ...prev, persona_tag: e.target.value }))}
                     className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white"
-                  >
-                    <option value="">-- 선택 --</option>
-                    {PDA_OPTIONS.persona.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
+                  />
                 </div>
 
                 {/* Desire */}
                 <div>
                   <label className="block text-xs font-medium text-ppl-text mb-1.5">Desire — 어떤 욕구</label>
-                  <select
+                  <input
+                    type="text"
+                    placeholder="예: 빠르고 간편하게 살 빼고 싶은 욕구"
                     value={uploadForm.desire_tag}
                     onChange={e => setUploadForm(prev => ({ ...prev, desire_tag: e.target.value }))}
                     className="w-full text-sm border border-ppl-border rounded-lg px-3 py-2 bg-white"
-                  >
-                    <option value="">-- 선택 --</option>
-                    {PDA_OPTIONS.desire.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
+                  />
                 </div>
 
                 {/* Awareness */}
@@ -4436,31 +4445,6 @@
             {galleryTab === 'ads' && (<>
             {/* 날짜 선택기는 ads 탭에서만 노출 */}
             <div className="flex justify-end items-center gap-3">
-              {selectedPlatform === 'meta' && (
-                <button
-                  onClick={async () => {
-                    setRefreshingImageUrls(true);
-                    try {
-                      const r = await fetch(`${API}/meta/refresh-image-urls`, { method: 'POST' });
-                      const d = await r.json();
-                      if (d.success) {
-                        // 캐시된 이미지 강제 리로드
-                        document.querySelectorAll('img[src*="creative-thumbnail"]').forEach(img => {
-                          const src = img.src;
-                          img.src = '';
-                          setTimeout(() => { img.src = src + '?t=' + Date.now(); }, 50);
-                        });
-                        alert(`이미지 URL 갱신 완료: ${d.updated}/${d.total}개`);
-                      }
-                    } catch(e) { alert('갱신 실패: ' + e.message); }
-                    setRefreshingImageUrls(false);
-                  }}
-                  disabled={refreshingImageUrls}
-                  className="px-3 py-2 text-xs font-medium bg-white border border-ppl-border rounded-xl text-ppl-sub hover:text-ppl-text hover:border-ppl-teal transition-colors disabled:opacity-50"
-                >
-                  {refreshingImageUrls ? '갱신 중...' : '이미지 고해상도 갱신'}
-                </button>
-              )}
               <div className="flex items-center gap-2 bg-white border border-ppl-border rounded-2xl px-4 py-3 shadow-sm">
                 <div className="flex flex-col">
                   <span className="text-[10px] text-ppl-sub mb-0.5">시작일</span>
@@ -4531,7 +4515,13 @@
                 <div className="w-px h-5 bg-ppl-border mx-1"></div>
                 <select
                   value={adPerfCampaignId}
-                  onChange={e => { setAdPerfCampaignId(e.target.value); setAdPerfAdsetId(''); }}
+                  onChange={e => {
+                    const cid = e.target.value;
+                    setAdPerfCampaignId(cid);
+                    setAdPerfAdsetId('');
+                    setPdaInsight(null);
+                    setPdaInsightCampaignId(cid);
+                  }}
                   className="text-xs border border-ppl-border rounded-lg px-2 py-1.5 bg-white cursor-pointer max-w-[160px]"
                 >
                   <option value="">캠페인 전체</option>
@@ -4566,6 +4556,85 @@
                 </select>
               </div>
             </div>
+
+            {/* P.D.A AI 인사이트 카드 */}
+            {adPerfCampaignId && (
+              <div className="bg-white rounded-2xl border border-ppl-border shadow-sm p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-violet-500"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                    <p className="text-sm font-semibold text-ppl-text">P.D.A 관점 AI 소재 분석</p>
+                    {pdaInsight && <span className="text-[10px] text-ppl-sub">· {pdaInsight.total}개 소재 기반{pdaInsight.hasPda ? ' (P.D.A 태그 적용)' : ' (태그 없음, 소재명 기반)'}</span>}
+                  </div>
+                  {!pdaInsightLoading && (
+                    <button
+                      onClick={async () => {
+                        if (filteredAds.length === 0) return;
+                        const campaignName = adPerfFilterOptions.campaigns.find(c => c.campaign_id === adPerfCampaignId)?.campaign_name || adPerfCampaignId;
+                        setPdaInsightLoading(true); setPdaInsight(null);
+                        try {
+                          const r = await apiFetch(`${API}/ad-performance/pda-insight`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ads: filteredAds, campaign_name: campaignName }),
+                          });
+                          const d = await r.json();
+                          setPdaInsight(d);
+                        } catch(e) { setPdaInsight({ error: e.message }); }
+                        setPdaInsightLoading(false);
+                      }}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-violet-500 text-white font-semibold hover:bg-violet-600 transition-colors flex items-center gap-1.5"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 2a10 10 0 1 0 10 10"/><path d="M22 2 12 12"/></svg>
+                      AI 분석
+                    </button>
+                  )}
+                  {pdaInsightLoading && (
+                    <div className="flex items-center gap-2 text-xs text-violet-600">
+                      <span className="w-4 h-4 border-2 border-violet-400 border-t-transparent rounded-full animate-spin"></span>
+                      Claude 분석 중...
+                    </div>
+                  )}
+                </div>
+
+                {!pdaInsight && !pdaInsightLoading && (
+                  <p className="text-xs text-ppl-sub text-center py-4">캠페인 소재 데이터를 P(페르소나) · D(욕망) · A(인지단계) 관점으로 분석합니다. AI 분석 버튼을 눌러주세요.</p>
+                )}
+
+                {pdaInsight?.error && (
+                  <p className="text-xs text-red-500 text-center py-4">{pdaInsight.error}</p>
+                )}
+
+                {pdaInsight && !pdaInsight.error && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-3 gap-3">
+                      {[
+                        { key: 'persona', label: 'P · 페르소나', color: 'violet', icon: '👤' },
+                        { key: 'desire',  label: 'D · 욕망/니즈', color: 'blue',   icon: '💡' },
+                        { key: 'awareness', label: 'A · 인지단계', color: 'teal',  icon: '🎯' },
+                      ].map(({ key, label, color, icon }) => {
+                        const d = pdaInsight[key];
+                        if (!d) return null;
+                        const colors = { violet: 'bg-violet-50 border-violet-100 text-violet-700', blue: 'bg-blue-50 border-blue-100 text-blue-700', teal: 'bg-teal-50 border-teal-100 text-teal-700' };
+                        return (
+                          <div key={key} className={`rounded-xl border p-3 ${colors[color]}`}>
+                            <p className="text-[10px] font-bold uppercase tracking-wider mb-1 opacity-70">{icon} {label}</p>
+                            {d.best && <p className="text-xs font-bold mb-1">우수: {d.best}</p>}
+                            <p className="text-[11px] leading-relaxed opacity-90">{d.insight}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {pdaInsight.summary && (
+                      <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
+                        <p className="text-[10px] font-bold text-amber-700 uppercase tracking-wider mb-1">✨ 종합 인사이트 & 다음 소재 추천</p>
+                        <p className="text-xs text-amber-900 leading-relaxed">{pdaInsight.summary}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Gallery Grid */}
             {filteredAds.length === 0 ? (
@@ -4699,6 +4768,10 @@
         const [metaUploadingId, setMetaUploadingId] = React.useState(null);
         const [metaUploadResults, setMetaUploadResults] = React.useState({});
 
+        // PDA 일괄 분석 상태
+        const [pdaAnalyzing, setPdaAnalyzing] = React.useState(false);
+        const [pdaAnalyzeResult, setPdaAnalyzeResult] = React.useState(null);
+
 
         const loadLibrary = () => {
           setLoading(true);
@@ -4711,11 +4784,54 @@
         const loadMetaAdList = () => {
           apiFetch(`${API}/meta/ad-list`)
             .then(r => r.json())
-            .then(data => setMetaAdList(Array.isArray(data) ? data : []))
+            .then(data => {
+              const list = Array.isArray(data) ? data : [];
+              list.sort((a, b) => (b.ad_name || '').localeCompare(a.ad_name || ''));
+              setMetaAdList(list);
+            })
             .catch(() => {});
         };
 
-        React.useEffect(() => { loadLibrary(); loadMetaAdList(); }, []);
+        React.useEffect(() => {
+          loadLibrary();
+          loadMetaAdList();
+          const ws = new WebSocket(WS_URL);
+          ws.onmessage = (e) => {
+            try {
+              const msg = JSON.parse(e.data);
+              if (msg.type === 'pda_analyzed') {
+                setLibrary(prev => prev.map(i => i.id === msg.data.id
+                  ? { ...i, persona: msg.data.persona, desire: msg.data.desire, awareness: msg.data.awareness }
+                  : i
+                ));
+              } else if (msg.type === 'pda_analyze_done') {
+                setPdaAnalyzing(false);
+                setPdaAnalyzeResult(`${msg.data.total}개 소재 분석 완료`);
+              }
+            } catch {}
+          };
+          return () => ws.close();
+        }, []);
+
+        const analyzeAllPda = async (overwrite = false) => {
+          setPdaAnalyzing(true);
+          setPdaAnalyzeResult(null);
+          try {
+            const data = await apiFetch(`${API}/creative-library/analyze-pda`, {
+              method: 'POST',
+              body: JSON.stringify({ overwrite }),
+            }).then(r => r.json());
+            if (data.queued === 0) {
+              setPdaAnalyzing(false);
+              setPdaAnalyzeResult('분석할 소재가 없습니다 (모두 PDA 입력됨)');
+            } else {
+              setPdaAnalyzeResult(`${data.queued}개 분석 중...`);
+            }
+          } catch (e) {
+            setPdaAnalyzing(false);
+            setPdaAnalyzeResult('분석 요청 실패');
+          }
+        };
 
         const uploadFiles = async (files) => {
           if (!files?.length) return;
@@ -4840,12 +4956,31 @@
               </div>
             )}
 
-            {/* 통계 요약 */}
+            {/* 통계 요약 + PDA 분석 버튼 */}
             {library.length > 0 && (
-              <div className="flex items-center gap-4 text-sm text-ppl-sub">
-                <span>총 <strong className="text-ppl-text">{library.length}</strong>개</span>
-                <span>Meta 광고 연결 <strong className="text-ppl-text">{mappedCount}</strong>개</span>
-                <span>미연결 <strong className="text-amber-500">{library.length - mappedCount}</strong>개</span>
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-4 text-sm text-ppl-sub">
+                  <span>총 <strong className="text-ppl-text">{library.length}</strong>개</span>
+                  <span>Meta 광고 연결 <strong className="text-ppl-text">{mappedCount}</strong>개</span>
+                  <span>미연결 <strong className="text-amber-500">{library.length - mappedCount}</strong>개</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {pdaAnalyzeResult && <span className="text-xs text-ppl-sub">{pdaAnalyzeResult}</span>}
+                  <button
+                    onClick={() => analyzeAllPda(false)}
+                    disabled={pdaAnalyzing}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-violet-50 text-violet-600 border border-violet-200 hover:bg-violet-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5">
+                    {pdaAnalyzing
+                      ? <><span className="w-3 h-3 border border-violet-400 border-t-transparent rounded-full animate-spin"></span>분석 중...</>
+                      : <>✦ PDA 미입력 소재 자동 분석</>}
+                  </button>
+                  <button
+                    onClick={() => { if (confirm('PDA가 이미 입력된 소재도 모두 재분석할까요?')) analyzeAllPda(true); }}
+                    disabled={pdaAnalyzing}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-ppl-bg text-ppl-sub border border-ppl-border hover:bg-ppl-hover disabled:opacity-50 disabled:cursor-not-allowed">
+                    전체 재분석
+                  </button>
+                </div>
               </div>
             )}
 

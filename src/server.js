@@ -1184,6 +1184,49 @@ app.post('/api/creative-library/upload', libraryUpload.array('images', 50), asyn
     return res.status(500).json({ error: e.message });
   }
   res.json({ success: true, uploaded: results.length, results });
+
+  // 3단계: 백그라운드에서 Claude Vision PDA 자동 분석
+  if (process.env.ANTHROPIC_API_KEY) {
+    (async () => {
+      const Anthropic = (await import('@anthropic-ai/sdk')).default;
+      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      const updatePda = db.prepare(`UPDATE creative_library SET persona = ?, desire = ?, awareness = ? WHERE id = ?`);
+
+      for (const { id, jpegBuffer } of successItems) {
+        try {
+          const b64 = jpegBuffer.toString('base64');
+          const response = await anthropic.messages.create({
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 256,
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } },
+                { type: 'text', text: `이 광고 이미지를 분석해서 P·D·A 태그를 작성하세요.
+JSON만 반환하세요 (다른 텍스트 없이):
+{"persona":"값","desire":"값","awareness":"값"}
+
+persona: 이 광고가 타겟하는 구체적인 인물 유형을 자유롭게 한 문장으로 (예: 운동을 시작하려는 30대 직장인)
+desire: 이 광고가 자극하는 핵심 욕구나 동기를 자유롭게 한 문장으로 (예: 건강하게 살 빼고 싶은 욕구)
+awareness 옵션 (이 중 하나만): 문제 인식 전, 문제 인식, 해결책 탐색, 제품 인지, 구매 준비` },
+              ],
+            }],
+          });
+
+          const text = response.content[0]?.text || '';
+          const match = text.match(/\{[\s\S]*?\}/);
+          if (match) {
+            const { persona, desire, awareness } = JSON.parse(match[0]);
+            updatePda.run(persona || null, desire || null, awareness || null, id);
+            broadcastToClients('pda_analyzed', { id, persona, desire, awareness });
+            logger.info('PDA auto-analyzed', { id, persona, desire, awareness });
+          }
+        } catch (e) {
+          logger.warn('PDA auto-analysis failed', { id, error: e.message });
+        }
+      }
+    })();
+  }
 });
 
 /** PATCH /api/creative-library/:id — 이름 변경 */
@@ -1203,6 +1246,71 @@ app.patch('/api/creative-library/:id/ad-mapping', (req, res) => {
   if (!row) return res.status(404).json({ error: 'Not found' });
   db.prepare(`UPDATE creative_library SET ad_id = ? WHERE id = ?`).run(ad_id || null, req.params.id);
   res.json({ success: true });
+});
+
+/**
+ * POST /api/creative-library/analyze-pda
+ * 기존 소재 전체(또는 지정 ID 목록) Claude Vision PDA 재분석
+ * body: { ids?: string[], overwrite?: boolean }
+ *   ids 없으면 전체 대상, overwrite=false(기본)이면 PDA 미입력 소재만 분석
+ */
+app.post('/api/creative-library/analyze-pda', async (req, res) => {
+  if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ error: 'ANTHROPIC_API_KEY not set' });
+
+  const { ids, overwrite = false } = req.body || {};
+
+  let query = `SELECT id, image_data FROM creative_library WHERE image_data IS NOT NULL`;
+  if (ids?.length) {
+    query += ` AND id IN (${ids.map(() => '?').join(',')})`;
+  } else if (!overwrite) {
+    query += ` AND (persona IS NULL OR desire IS NULL OR awareness IS NULL)`;
+  }
+  const rows = ids?.length
+    ? db.prepare(query).all(...ids)
+    : db.prepare(query).all();
+
+  res.json({ success: true, queued: rows.length });
+
+  (async () => {
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const updatePda = db.prepare(`UPDATE creative_library SET persona = ?, desire = ?, awareness = ? WHERE id = ?`);
+
+    for (const row of rows) {
+      try {
+        const b64 = Buffer.from(row.image_data).toString('base64');
+        const response = await anthropic.messages.create({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 256,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } },
+              { type: 'text', text: `이 광고 이미지를 분석해서 P·D·A 태그를 작성하세요.
+JSON만 반환하세요 (다른 텍스트 없이):
+{"persona":"값","desire":"값","awareness":"값"}
+
+persona: 이 광고가 타겟하는 구체적인 인물 유형을 자유롭게 한 문장으로 (예: 운동을 시작하려는 30대 직장인)
+desire: 이 광고가 자극하는 핵심 욕구나 동기를 자유롭게 한 문장으로 (예: 건강하게 살 빼고 싶은 욕구)
+awareness 옵션 (이 중 하나만): 문제 인식 전, 문제 인식, 해결책 탐색, 제품 인지, 구매 준비` },
+            ],
+          }],
+        });
+
+        const text = response.content[0]?.text || '';
+        const match = text.match(/\{[\s\S]*?\}/);
+        if (match) {
+          const { persona, desire, awareness } = JSON.parse(match[0]);
+          updatePda.run(persona || null, desire || null, awareness || null, row.id);
+          broadcastToClients('pda_analyzed', { id: row.id, persona, desire, awareness });
+          logger.info('PDA re-analyzed', { id: row.id, persona, desire, awareness });
+        }
+      } catch (e) {
+        logger.warn('PDA re-analysis failed', { id: row.id, error: e.message });
+      }
+    }
+    broadcastToClients('pda_analyze_done', { total: rows.length });
+  })();
 });
 
 /** PATCH /api/creative-library/:id/pda — P.D.A 태그 저장 */
@@ -1485,19 +1593,26 @@ app.post('/api/creative-library/:id/push-to-google', async (req, res) => {
   }
 });
 
-/** GET /api/meta/ad-list — 라이브러리 매핑용 Meta 광고 목록 (ad_id + ad_name 중복제거) */
-app.get('/api/meta/ad-list', (req, res) => {
-  const rows = db.prepare(`
-    SELECT ad_id, ad_name, campaign_name, adset_name,
-           MAX(date_start) as last_date,
-           SUM(spend) as total_spend
-    FROM ad_performance
-    WHERE platform = 'meta'
-    GROUP BY ad_id
-    ORDER BY total_spend DESC
-    LIMIT 200
-  `).all();
-  res.json(rows);
+/** GET /api/meta/ad-list — 라이브러리 매핑용 Meta 광고 목록 (Meta API 직접 조회, DB fallback) */
+app.get('/api/meta/ad-list', async (req, res) => {
+  try {
+    const meta = getMetaClient();
+    const ads = await meta.getAds(['ACTIVE', 'PAUSED']);
+    return res.json(ads);
+  } catch (e) {
+    logger.warn('meta/ad-list API failed, falling back to DB', { error: e.message });
+    const rows = db.prepare(`
+      SELECT ad_id, ad_name, campaign_name, adset_name,
+             MAX(date_start) as last_date,
+             SUM(spend) as total_spend
+      FROM ad_performance
+      WHERE platform = 'meta'
+      GROUP BY ad_id
+      ORDER BY total_spend DESC
+      LIMIT 200
+    `).all();
+    return res.json(rows);
+  }
 });
 
 // ─── Meta Top Creatives (for PMAX reuse) ──────────────────────
@@ -2269,6 +2384,90 @@ app.get('/api/ad-performance/summary', async (req, res) => {
 
   const row = db.prepare(query).get(...params);
   res.json(row);
+});
+
+/**
+ * POST /api/ad-performance/pda-insight
+ * 선택된 캠페인의 소재 성과 데이터를 Claude Haiku로 P.D.A 관점 분석
+ * body: { ads: [...enriched ad rows], campaign_name: string }
+ */
+app.post('/api/ad-performance/pda-insight', async (req, res) => {
+  const { ads, campaign_name } = req.body;
+  if (!Array.isArray(ads) || ads.length === 0) return res.status(400).json({ error: 'ads required' });
+  if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ error: 'ANTHROPIC_API_KEY not set' });
+
+  // P.D.A 태그 있는 소재만 추출, 없으면 전체 사용
+  const tagged = ads.filter(a => a.persona || a.desire || a.awareness);
+  const target = tagged.length > 0 ? tagged : ads;
+
+  // 분석용 데이터 정제 (상위 30개)
+  const payload = target
+    .filter(a => (a.spend || 0) > 0)
+    .slice(0, 30)
+    .map(a => ({
+      name: a.ad_name,
+      persona: a.persona || null,
+      desire: a.desire || null,
+      awareness: a.awareness || null,
+      spend: Math.round(a.spend || 0),
+      roas: parseFloat((a.roas || 0).toFixed(2)),
+      conversions: a.conversions || 0,
+      ctr: parseFloat((a.ctr || 0).toFixed(2)),
+      cpa: Math.round(a.cpa || 0),
+      impressions: a.impressions || 0,
+    }));
+
+  if (payload.length === 0) return res.status(400).json({ error: '지출 데이터가 있는 소재가 없습니다.' });
+
+  try {
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    const hasPda = tagged.length > 0;
+    const prompt = hasPda
+      ? `당신은 퍼포먼스 마케팅 전문가입니다. 아래는 Meta 광고 캠페인 "${campaign_name}"의 소재별 성과 데이터입니다. 각 소재에는 P(Persona), D(Desire), A(Awareness) 태그가 붙어 있습니다.
+
+다음 3가지 관점에서 분석하여 JSON으로만 응답하세요:
+
+{
+  "persona": { "best": "가장 성과 좋은 페르소나 태그명", "insight": "해당 페르소나가 왜 잘 됐는지 1-2문장 한국어 인사이트" },
+  "desire": { "best": "가장 성과 좋은 욕구/니즈 태그명", "insight": "해당 욕구 소구가 왜 효과적인지 1-2문장 한국어 인사이트" },
+  "awareness": { "best": "가장 성과 좋은 인지단계 태그명", "insight": "해당 인지단계 접근이 왜 유효한지 1-2문장 한국어 인사이트" },
+  "summary": "전체 캠페인 소재 성과를 P.D.A 관점에서 종합한 2-3문장 한국어 요약 및 다음 소재 제작 추천"
+}
+
+소재 데이터:
+${JSON.stringify(payload)}`
+      : `당신은 퍼포먼스 마케팅 전문가입니다. 아래는 Meta 광고 캠페인 "${campaign_name}"의 소재별 성과 데이터입니다. (P.D.A 태그 없음)
+
+소재명 패턴과 성과 지표를 바탕으로 분석하여 JSON으로만 응답하세요:
+
+{
+  "persona": { "best": "소재명에서 유추한 주요 타겟", "insight": "타겟 관련 인사이트 1-2문장" },
+  "desire": { "best": "소재명에서 유추한 주요 소구점", "insight": "소구점 관련 인사이트 1-2문장" },
+  "awareness": { "best": "소재명에서 유추한 접근 방식", "insight": "접근 방식 관련 인사이트 1-2문장" },
+  "summary": "전체 소재 성과 패턴 분석 및 다음 소재 제작 추천 2-3문장"
+}
+
+소재 데이터:
+${JSON.stringify(payload)}`;
+
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const text = response.content[0]?.text || '{}';
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return res.status(500).json({ error: '파싱 실패', raw: text });
+
+    const result = JSON.parse(match[0]);
+    res.json({ ...result, hasPda, total: payload.length, campaign_name });
+  } catch (e) {
+    logger.error('PDA insight generation failed', { error: e.message });
+    safeError(res, e, 'pda-insight');
+  }
 });
 
 /** GET /api/ad-performance/filters — Campaign/Adset filter options */

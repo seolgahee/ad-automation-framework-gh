@@ -160,6 +160,28 @@ export class MetaAdsClient extends BaseAdsClient {
     return [];
   }
 
+  /** List all ads in the account (ACTIVE + PAUSED) */
+  async getAds(statusFilter = ['ACTIVE', 'PAUSED']) {
+    this._ensureConfigured();
+    const fields = ['id', 'name', 'status', 'adset_id', 'adset_name', 'campaign_id', 'campaign_name'];
+    const params = { effective_status: statusFilter, limit: 500 };
+
+    let cursor = await this._withTimeout(this.account.getAds(fields, params), 'getAds');
+    const all = [...cursor];
+    while (cursor.hasNext()) {
+      cursor = await this._withTimeout(cursor.next(), 'getAds:next');
+      all.push(...cursor);
+    }
+    logger.info(`Fetched ${all.length} Meta ads`);
+    return all.map(a => ({
+      ad_id: a._data.id,
+      ad_name: a._data.name,
+      adset_name: a._data.adset_name,
+      campaign_name: a._data.campaign_name,
+      status: a._data.status,
+    }));
+  }
+
   /** List ad sets for a given campaign */
   async getAdSets(campaignId) {
     this._ensureConfigured();

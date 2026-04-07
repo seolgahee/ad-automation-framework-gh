@@ -2730,6 +2730,138 @@ collector.on('collected', () => {
   broadcastToClients('performance_update', optimizer.getSummary(1));
 });
 
+// ─── Ad Automation Rules ─────────────────────────────────────────
+import { RuleEngine } from './analytics/rule-engine.js';
+
+const ruleEngine = new RuleEngine(getMetaClient());
+
+/** GET /api/rules — 전체 규칙 목록 */
+app.get('/api/rules', (req, res) => {
+  const rules = db.prepare(`SELECT * FROM ad_automation_rules ORDER BY created_at DESC`).all();
+  res.json(rules);
+});
+
+/** POST /api/rules — 규칙 생성 */
+app.post('/api/rules', (req, res) => {
+  const err = validateRequired(req.body, ['name', 'campaign_id', 'roas_off']);
+  if (err) return res.status(400).json({ error: err });
+
+  const {
+    name, platform = 'meta', campaign_id, campaign_name,
+    roas_off, roas_on = null, min_spend = 10000, lookback_days = 7,
+  } = req.body;
+
+  if (!['meta', 'google'].includes(platform)) {
+    return res.status(400).json({ error: 'platform must be meta or google' });
+  }
+  if (parseFloat(roas_off) <= 0) {
+    return res.status(400).json({ error: 'roas_off must be > 0' });
+  }
+  if (roas_on != null && parseFloat(roas_on) <= parseFloat(roas_off)) {
+    return res.status(400).json({ error: 'roas_on must be > roas_off' });
+  }
+
+  const result = db.prepare(`
+    INSERT INTO ad_automation_rules
+      (name, platform, campaign_id, campaign_name, roas_off, roas_on, min_spend, lookback_days)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(name, platform, String(campaign_id), campaign_name || null,
+    parseFloat(roas_off), roas_on != null ? parseFloat(roas_on) : null,
+    parseFloat(min_spend), parseInt(lookback_days) || 7);
+
+  const created = db.prepare(`SELECT * FROM ad_automation_rules WHERE id = ?`).get(result.lastInsertRowid);
+  logger.info('Ad automation rule created', { id: result.lastInsertRowid, name });
+  res.status(201).json(created);
+});
+
+/** PUT /api/rules/:id — 규칙 수정 */
+app.put('/api/rules/:id', (req, res) => {
+  const ruleId = parseInt(req.params.id);
+  if (!ruleId) return res.status(400).json({ error: 'Invalid rule ID' });
+
+  const rule = db.prepare(`SELECT * FROM ad_automation_rules WHERE id = ?`).get(ruleId);
+  if (!rule) return res.status(404).json({ error: 'Rule not found' });
+
+  const {
+    name, campaign_name, roas_off, roas_on, min_spend, lookback_days, enabled,
+  } = req.body;
+
+  const updates = {
+    name:          name          ?? rule.name,
+    campaign_name: campaign_name ?? rule.campaign_name,
+    roas_off:      roas_off      != null ? parseFloat(roas_off)      : rule.roas_off,
+    roas_on:       roas_on       != null ? parseFloat(roas_on)       : rule.roas_on,
+    min_spend:     min_spend     != null ? parseFloat(min_spend)     : rule.min_spend,
+    lookback_days: lookback_days != null ? parseInt(lookback_days)   : rule.lookback_days,
+    enabled:       enabled       != null ? (enabled ? 1 : 0)         : rule.enabled,
+  };
+
+  if (updates.roas_on != null && updates.roas_on <= updates.roas_off) {
+    return res.status(400).json({ error: 'roas_on must be > roas_off' });
+  }
+
+  db.prepare(`
+    UPDATE ad_automation_rules
+    SET name=?, campaign_name=?, roas_off=?, roas_on=?, min_spend=?, lookback_days=?, enabled=?,
+        updated_at=datetime('now')
+    WHERE id=?
+  `).run(updates.name, updates.campaign_name, updates.roas_off, updates.roas_on,
+    updates.min_spend, updates.lookback_days, updates.enabled, ruleId);
+
+  const updated = db.prepare(`SELECT * FROM ad_automation_rules WHERE id = ?`).get(ruleId);
+  res.json(updated);
+});
+
+/** DELETE /api/rules/:id — 규칙 삭제 */
+app.delete('/api/rules/:id', (req, res) => {
+  const ruleId = parseInt(req.params.id);
+  if (!ruleId) return res.status(400).json({ error: 'Invalid rule ID' });
+
+  const rule = db.prepare(`SELECT id FROM ad_automation_rules WHERE id = ?`).get(ruleId);
+  if (!rule) return res.status(404).json({ error: 'Rule not found' });
+
+  db.prepare(`DELETE FROM ad_automation_rules WHERE id = ?`).run(ruleId);
+  logger.info('Ad automation rule deleted', { id: ruleId });
+  res.json({ success: true });
+});
+
+/** POST /api/rules/:id/run — 규칙 수동 실행 */
+app.post('/api/rules/:id/run', async (req, res) => {
+  const ruleId = parseInt(req.params.id);
+  if (!ruleId) return res.status(400).json({ error: 'Invalid rule ID' });
+
+  try {
+    const actions = await ruleEngine.runOne(ruleId);
+    res.json({ success: true, actions });
+  } catch (err) {
+    logger.error('Manual rule run failed', { ruleId, error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** POST /api/rules/run-all — 모든 활성 규칙 수동 실행 */
+app.post('/api/rules/run-all', async (req, res) => {
+  try {
+    const result = await ruleEngine.runAll();
+    res.json({ success: true, ...result });
+  } catch (err) {
+    logger.error('run-all rules failed', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /api/rules/:id/log — 규칙 실행 로그 */
+app.get('/api/rules/:id/log', (req, res) => {
+  const ruleId = parseInt(req.params.id);
+  if (!ruleId) return res.status(400).json({ error: 'Invalid rule ID' });
+
+  const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+  const logs = db.prepare(`
+    SELECT * FROM ad_rule_log WHERE rule_id = ? ORDER BY created_at DESC LIMIT ?
+  `).all(ruleId, limit);
+  res.json(logs);
+});
+
 server.listen(PORT, async () => {
   logger.info(`API server running on http://localhost:${PORT}`);
   logger.info(`WebSocket available at ws://localhost:${PORT}/ws`);

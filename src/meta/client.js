@@ -257,6 +257,15 @@ export class MetaAdsClient extends BaseAdsClient {
     return result._data;
   }
 
+  /** Pause or enable an individual ad */
+  async updateAdStatus(adId, status) {
+    this._ensureConfigured();
+    const ad = new bizSdk.Ad(adId);
+    await this._withTimeout(ad.update([], { status }), 'updateAdStatus');
+    logger.info('Meta ad status updated', { adId, status });
+    return { success: true, adId, status };
+  }
+
   /** Create an ad linking creative to ad set */
   async createAd({ adSetId, creativeId, name, status = 'PAUSED', pixelId = null, conversionEvent = null }) {
     this._ensureConfigured();

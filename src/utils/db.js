@@ -373,6 +373,40 @@ export function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_job_log_library ON job_log(library_id);
     CREATE INDEX IF NOT EXISTS idx_job_log_type ON job_log(job_type);
+
+    -- 광고소재 자동 ON/OFF 규칙
+    CREATE TABLE IF NOT EXISTS ad_automation_rules (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      name            TEXT NOT NULL,
+      platform        TEXT NOT NULL DEFAULT 'meta' CHECK(platform IN ('meta', 'google')),
+      campaign_id     TEXT NOT NULL,
+      campaign_name   TEXT,
+      roas_off        REAL NOT NULL,
+      roas_on         REAL,
+      min_spend       REAL DEFAULT 10000,
+      lookback_days   INTEGER DEFAULT 7,
+      enabled         INTEGER DEFAULT 1,
+      last_run_at     TEXT,
+      created_at      TEXT DEFAULT (datetime('now')),
+      updated_at      TEXT DEFAULT (datetime('now'))
+    );
+
+    -- 규칙 실행 로그
+    CREATE TABLE IF NOT EXISTS ad_rule_log (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      rule_id     INTEGER NOT NULL REFERENCES ad_automation_rules(id) ON DELETE CASCADE,
+      ad_id       TEXT NOT NULL,
+      ad_name     TEXT,
+      campaign_id TEXT,
+      action      TEXT NOT NULL,
+      roas        REAL,
+      spend       REAL,
+      reason      TEXT,
+      created_at  TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rule_log_rule ON ad_rule_log(rule_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_rule_log_ad ON ad_rule_log(ad_id, created_at);
   `);
 
   logger.info('Database initialized', { path: DB_PATH });

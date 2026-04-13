@@ -7,7 +7,7 @@
 import MetaAdsClient from '../meta/client.js';
 import GoogleAdsClient from '../google/client.js';
 import TikTokAdsClient from '../tiktok/client.js';
-import NaverGfaClient from '../naver/client.js';
+// import NaverGfaClient from '../naver/client.js'; // 파일 없음 - 임시 비활성화
 
 let _metaClient = null;
 let _googleClient = null;
@@ -34,7 +34,7 @@ export function getTikTokClient() {
 
 /** Get or create the singleton Naver GFA client */
 export function getNaverClient() {
-  if (!_naverClient) _naverClient = new NaverGfaClient();
+  // if (!_naverClient) _naverClient = new NaverGfaClient(); // 파일 없음 - 임시 비활성화
   return _naverClient;
 }
 

@@ -1182,8 +1182,8 @@
       };
 
       // ─── Meta Creative Settings Panel ───
-      const MetaCreativeSettingsPanel = ({ campaigns }) => {
-        const [tab, setTab] = useState('single');
+      const MetaCreativeSettingsPanel = ({ campaigns, defaultTab }) => {
+        const [tab, setTab] = useState(defaultTab || 'single');
         return (
           <div className="space-y-6">
             <div>
@@ -1211,7 +1211,7 @@
       };
 
       // ─── Google Direct Upload Form ───
-      const GoogleDirectUploadForm = ({ campaigns }) => {
+      const GoogleDirectUploadForm = ({ campaigns, defaultPmaxMode }) => {
         const MODES = [
           { id: 'pmax',       label: 'PMAX',       desc: '퍼포먼스 맥스' },
           { id: 'search',     label: 'Search',     desc: '검색 광고 (RSA)' },
@@ -1231,7 +1231,7 @@
         const NEEDS_MERCHANT = ['shopping'];
 
         const [mode, setMode] = useState('pmax');
-        const [pmaxMode, setPmaxMode] = useState('new'); // 'new' | 'add' | 'winner'
+        const [pmaxMode, setPmaxMode] = useState(defaultPmaxMode || 'new'); // 'new' | 'add' | 'winner'
 
         // Meta Winner → PMAX 파이프라인 상태
         const [winnerDays, setWinnerDays] = useState(7);
@@ -3397,7 +3397,7 @@
       };
 
       // ─── Google Creative Settings Panel ───
-      const GoogleCreativeSettingsPanel = ({ campaigns }) => (
+      const GoogleCreativeSettingsPanel = ({ campaigns, defaultPmaxMode }) => (
         <div className="space-y-6">
           <div>
             <div className="flex items-center gap-2 mb-1">
@@ -3406,7 +3406,7 @@
             </div>
             <p className="text-sm text-ppl-sub">Search / Display / Video / Demand Gen / Shopping / PMAX</p>
           </div>
-          <GoogleDirectUploadForm campaigns={campaigns} />
+          <GoogleDirectUploadForm campaigns={campaigns} defaultPmaxMode={defaultPmaxMode} />
         </div>
       );
 
@@ -3426,6 +3426,7 @@
       const [chatHistory, setChatHistory] = useState([]);
       const [activeView, setActiveView] = useState('overview');
       const [selectedPlatform, setSelectedPlatform] = useState('meta');
+      const [creativeSubView, setCreativeSubView] = useState(null); // 'meta-single'|'meta-bulk'|'google-add'|'google-winner'
       const ws = useRef(null);
       const chatEndRef = useRef(null);
 
@@ -3452,7 +3453,7 @@
 
       // ─── Ad Performance (Creatives Gallery) state ───
       const [adPerformance, setAdPerformance] = useState([]);
-      const [adPerfSort, setAdPerfSort] = useState('spend');
+      const [adPerfSort, setAdPerfSort] = useState('impressions');
       const [adPerfFilter, setAdPerfFilter] = useState('all'); // all, best, good, low
       const [adPerfPlatform, setAdPerfPlatform] = useState('all');
       const defaultAdPerfSince = new Date(Date.now() - 6 * 86400000).toISOString().split('T')[0];
@@ -3720,11 +3721,79 @@
               { icon: Icons.upload, label: 'Creative Upload', view: 'meta-creative' },
               { icon: Icons.image, label: '소재 라이브러리', view: 'library' },
             ].map((item, i) => (
-              <button key={i} onClick={() => { setActiveView(item.view); if (item.view === 'meta-creative' && selectedPlatform === 'all') setSelectedPlatform('meta'); }}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${activeView === item.view ? 'bg-ppl-teal text-white' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
-                {item.icon}
-                <span>{item.label}</span>
-              </button>
+              <React.Fragment key={i}>
+                <button onClick={() => { setActiveView(item.view); if (item.view === 'meta-creative' && selectedPlatform === 'all') setSelectedPlatform('meta'); }}
+                  className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${activeView === item.view ? 'bg-ppl-teal text-white' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
+                  {item.icon}
+                  <span>{item.label}</span>
+                </button>
+                {item.view === 'overview' && (
+                  <div className="ml-4 mt-0.5 mb-1 flex flex-col gap-0.5">
+                    <button onClick={() => { setActiveView('overview'); setSelectedPlatform('meta'); }}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 ${activeView === 'overview' && selectedPlatform === 'meta' ? 'bg-blue-50 text-blue-600 font-semibold' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0"></span>
+                      Meta
+                    </button>
+                    <button onClick={() => { setActiveView('overview'); setSelectedPlatform('google'); }}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 ${activeView === 'overview' && selectedPlatform === 'google' ? 'bg-red-50 text-red-600 font-semibold' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0"></span>
+                      Google
+                    </button>
+                  </div>
+                )}
+                {item.view === 'automation' && (
+                  <div className="ml-4 mt-0.5 mb-1 flex flex-col gap-0.5">
+                    <button onClick={() => setActiveView('automation')}
+                      className="w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text">
+                      <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0"></span>
+                      규칙 업무 설정
+                    </button>
+                    <button onClick={() => setActiveView('automation')}
+                      className="w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text">
+                      <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0"></span>
+                      Slack 알림 제어
+                    </button>
+                  </div>
+                )}
+                {item.view === 'meta-creative' && (
+                  <div className="ml-4 mt-0.5 mb-1 flex flex-col gap-0.5">
+                    <button onClick={() => { setActiveView('meta-creative'); setSelectedPlatform('meta'); setCreativeSubView('meta-single'); }}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 ${activeView === 'meta-creative' && creativeSubView === 'meta-single' ? 'bg-blue-50 text-blue-600 font-semibold' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0"></span>
+                      Meta - 단건 등록
+                    </button>
+                    <button onClick={() => { setActiveView('meta-creative'); setSelectedPlatform('meta'); setCreativeSubView('meta-bulk'); }}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 ${activeView === 'meta-creative' && creativeSubView === 'meta-bulk' ? 'bg-blue-50 text-blue-600 font-semibold' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0"></span>
+                      Meta - 대량 등록
+                    </button>
+                    <button onClick={() => { setActiveView('meta-creative'); setSelectedPlatform('google'); setCreativeSubView('google-add'); }}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 ${activeView === 'meta-creative' && creativeSubView === 'google-add' ? 'bg-red-50 text-red-600 font-semibold' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0"></span>
+                      Google - 기존 등록
+                    </button>
+                    <button onClick={() => { setActiveView('meta-creative'); setSelectedPlatform('google'); setCreativeSubView('google-winner'); }}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 ${activeView === 'meta-creative' && creativeSubView === 'google-winner' ? 'bg-red-50 text-red-600 font-semibold' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0"></span>
+                      Google - Meta Pipeline
+                    </button>
+                  </div>
+                )}
+                {item.view === 'creatives' && (
+                  <div className="ml-4 mt-0.5 mb-1 flex flex-col gap-0.5">
+                    <button onClick={() => { setActiveView('creatives'); setSelectedPlatform('meta'); }}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 ${activeView === 'creatives' && selectedPlatform === 'meta' ? 'bg-blue-50 text-blue-600 font-semibold' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0"></span>
+                      Meta
+                    </button>
+                    <button onClick={() => { setActiveView('creatives'); setSelectedPlatform('google'); }}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 ${activeView === 'creatives' && selectedPlatform === 'google' ? 'bg-red-50 text-red-600 font-semibold' : 'text-ppl-sub hover:bg-ppl-hover hover:text-ppl-text'}`}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0"></span>
+                      Google
+                    </button>
+                  </div>
+                )}
+              </React.Fragment>
             ))}
 
 
@@ -4547,10 +4616,10 @@
                   onChange={e => setAdPerfSort(e.target.value)}
                   className="text-xs border border-ppl-border rounded-lg px-2 py-1.5 bg-white cursor-pointer"
                 >
+                  <option value="impressions">노출수</option>
                   <option value="spend">지출</option>
                   <option value="roas">ROAS</option>
                   <option value="ctr">CTR</option>
-                  <option value="impressions">노출수</option>
                   <option value="conversions">전환수</option>
                   <option value="cpa">CPA</option>
                 </select>
@@ -6085,9 +6154,9 @@
               {activeView === 'meta-creative' ? (
                 <div className="px-8 py-8">
                   {selectedPlatform === 'google' ? (
-                    <GoogleCreativeSettingsPanel campaigns={campaigns} />
+                    <GoogleCreativeSettingsPanel key={creativeSubView} campaigns={campaigns} defaultPmaxMode={creativeSubView === 'google-winner' ? 'winner' : creativeSubView === 'google-add' ? 'add' : undefined} />
                   ) : (
-                    <MetaCreativeSettingsPanel campaigns={campaigns} />
+                    <MetaCreativeSettingsPanel key={creativeSubView} campaigns={campaigns} defaultTab={creativeSubView === 'meta-bulk' ? 'bulk' : creativeSubView === 'meta-single' ? 'single' : undefined} />
                   )}
                 </div>
               ) : activeView === 'creatives' ? (

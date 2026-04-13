@@ -615,9 +615,9 @@ app.get('/api/campaigns', async (req, res) => {
   try {
     const [meta, google, naver] = [getMetaClient(), getGoogleClient(), getNaverClient()];
     const results = await Promise.allSettled([
-      meta._configured   ? meta.getCampaigns(['ACTIVE', 'PAUSED'])   : Promise.resolve([]),
-      google._configured ? google.getCampaigns(['ENABLED', 'PAUSED']) : Promise.resolve([]),
-      naver._configured  ? naver.getCampaigns()                       : Promise.resolve([]),
+      meta?._configured   ? meta.getCampaigns(['ACTIVE', 'PAUSED'])   : Promise.resolve([]),
+      google?._configured ? google.getCampaigns(['ENABLED', 'PAUSED']) : Promise.resolve([]),
+      naver?._configured  ? naver.getCampaigns()                       : Promise.resolve([]),
     ]);
 
     const metaCampaigns = (results[0].value || []).map(c => ({
@@ -2240,8 +2240,7 @@ app.get('/api/ad-performance', async (req, res) => {
 
       const allowedSorts = ['spend', 'roas', 'ctr', 'impressions', 'clicks', 'cpa', 'cpc', 'conversions'];
       const sortKey = allowedSorts.includes(sort) ? sort : 'spend';
-      const sortDir = order === 'asc' ? 1 : -1;
-      filtered.sort((a, b) => sortDir * ((b[sortKey] || 0) - (a[sortKey] || 0)));
+      filtered.sort((a, b) => order === 'asc' ? (a[sortKey] || 0) - (b[sortKey] || 0) : (b[sortKey] || 0) - (a[sortKey] || 0));
 
       const normalized = filtered.map(r => ({
         ad_id: r.adId, ad_name: r.adName,
@@ -2281,8 +2280,7 @@ app.get('/api/ad-performance', async (req, res) => {
 
       const allowedSorts = ['spend', 'roas', 'ctr', 'impressions', 'clicks', 'cpa', 'cpc', 'conversions'];
       const sortKey = allowedSorts.includes(sort) ? sort : 'spend';
-      const sortDir = order === 'asc' ? 1 : -1;
-      gRows.sort((a, b) => sortDir * ((b[sortKey] || 0) - (a[sortKey] || 0)));
+      gRows.sort((a, b) => order === 'asc' ? (a[sortKey] || 0) - (b[sortKey] || 0) : (b[sortKey] || 0) - (a[sortKey] || 0));
 
       const normalized = gRows.map(r => ({
         ad_id: r.adId, ad_name: r.adName,

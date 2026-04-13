@@ -2860,6 +2860,128 @@ app.get('/api/rules/:id/log', (req, res) => {
   res.json(logs);
 });
 
+// ─── Video Generator ─────────────────────────────────────────────
+
+const videoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+
+app.post('/api/generate-video', videoUpload.array('images', 20), async (req, res) => {
+  const { spawn } = await import('child_process');
+  const os = await import('os');
+  const fsp = fs.promises;
+
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({ error: '이미지를 1장 이상 업로드하세요.' });
+  }
+
+  const duration   = parseFloat(req.body.duration   || '14');
+  const transition = parseFloat(req.body.transition || '0.5');
+  const transType  = (req.body.transType || 'slideleft').replace(/[^a-z]/g, '');
+  const FPS        = 25;
+  const SIZE       = '1080:1080';
+
+  const tmpDir  = await fsp.mkdtemp(path.join(os.tmpdir(), 'adv-'));
+  const outFile = path.join(tmpDir, 'output.mp4');
+
+  // ffmpeg 실행 헬퍼
+  const runFfmpeg = (args) => new Promise((resolve, reject) => {
+    logger.info('ffmpeg', { cmd: ['ffmpeg', ...args].join(' ') });
+    const proc = spawn('ffmpeg', args);
+    let errLog = '';
+    proc.stderr.on('data', d => { errLog += d.toString(); });
+    proc.on('close', code => code === 0 ? resolve() : reject(new Error(errLog.slice(-800))));
+    proc.on('error', err => reject(new Error(err.code === 'ENOENT' ? 'ffmpeg not found in PATH' : err.message)));
+  });
+
+  try {
+    // 1단계: 이미지 임시 저장
+    const imgPaths = [];
+    for (let i = 0; i < req.files.length; i++) {
+      const ext = path.extname(req.files[i].originalname) || '.jpg';
+      const p   = path.join(tmpDir, `img${String(i).padStart(3,'0')}${ext}`);
+      await fsp.writeFile(p, req.files[i].buffer);
+      imgPaths.push(p);
+    }
+
+    const perImage = duration / imgPaths.length;
+
+    // 2단계: 이미지 → 개별 MP4 클립 변환 (가장 안정적인 방법)
+    const clipPaths = [];
+    for (let i = 0; i < imgPaths.length; i++) {
+      const clipDur = i < imgPaths.length - 1 ? perImage + transition : perImage;
+      const clip    = path.join(tmpDir, `clip${String(i).padStart(3,'0')}.mp4`);
+      await runFfmpeg([
+        '-loop', '1', '-r', String(FPS), '-i', imgPaths[i],
+        '-vf', `scale=${SIZE}:force_original_aspect_ratio=decrease,pad=${SIZE}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p`,
+        '-t', String(clipDur),
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+        '-pix_fmt', 'yuv420p',
+        '-y', clip,
+      ]);
+      clipPaths.push(clip);
+    }
+
+    // 3단계: 클립 xfade 연결
+    if (clipPaths.length === 1) {
+      await runFfmpeg([
+        '-i', clipPaths[0],
+        '-t', String(duration),
+        '-c', 'copy',
+        '-y', outFile,
+      ]);
+    } else {
+      const inputArgs = [];
+      clipPaths.forEach(p => inputArgs.push('-i', p));
+
+      const filterParts = [];
+      let prev = '0:v';
+      let offset = perImage - transition;
+      for (let i = 1; i < clipPaths.length; i++) {
+        const out = i === clipPaths.length - 1 ? 'outv' : `xf${i}`;
+        filterParts.push(
+          `[${prev}][${i}:v]xfade=transition=${transType}:duration=${transition}:offset=${offset.toFixed(3)}[${out}]`
+        );
+        prev = out;
+        offset += perImage - transition;
+      }
+
+      await runFfmpeg([
+        ...inputArgs,
+        '-filter_complex', filterParts.join('; '),
+        '-map', '[outv]',
+        '-r', String(FPS),
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+        '-pix_fmt', 'yuv420p',
+        '-t', String(duration),
+        '-y', outFile,
+      ]);
+    }
+
+    // 영상을 data/videos/ 에 복사 후 URL 반환 (blob URL CSP 우회)
+    const videosDir = path.join(process.cwd(), 'data', 'videos');
+    await fsp.mkdir(videosDir, { recursive: true });
+    const videoId   = `slideshow_${Date.now()}.mp4`;
+    const finalPath = path.join(videosDir, videoId);
+    await fsp.copyFile(outFile, finalPath);
+    await fsp.rm(tmpDir, { recursive: true }).catch(() => {});
+    res.json({ url: `/api/video/${videoId}`, filename: videoId });
+  } catch (e) {
+    await fsp.rm(tmpDir, { recursive: true }).catch(() => {});
+    logger.error('generate-video error', { error: e.message });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 생성된 영상 파일 서빙
+app.get('/api/video/:filename', (req, res) => {
+  const filename = path.basename(req.params.filename); // path traversal 방지
+  if (!filename.endsWith('.mp4')) return res.status(400).end();
+  const filePath = path.join(process.cwd(), 'data', 'videos', filename);
+  if (!fs.existsSync(filePath)) return res.status(404).end();
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  fs.createReadStream(filePath).pipe(res);
+});
+
 server.listen(PORT, async () => {
   logger.info(`API server running on http://localhost:${PORT}`);
   logger.info(`WebSocket available at ws://localhost:${PORT}/ws`);

@@ -15,7 +15,7 @@ import db, { initDatabase } from './utils/db.js';
 import logger from './utils/logger.js';
 import DataCollector from './analytics/collector.js';
 import { getOptimizer, getPipeline, getTemplateEngine, getABTestEngine, getAudienceManager } from './utils/services.js';
-import { getMetaClient, getGoogleClient, getNaverClient } from './utils/clients.js';
+import { getMetaClient, getGoogleClient, getNaverClient, fetchStockInfo } from './utils/clients.js';
 import crypto from 'crypto';
 import path from 'path';
 import { getAdapter } from './utils/platform-adapter.js';
@@ -2972,6 +2972,16 @@ app.post('/api/generate-video', videoUpload.array('images', 20), async (req, res
 });
 
 // 생성된 영상 파일 서빙
+// ─── Snowflake 재고 조회 ──────────────────────────────────────────
+// GET /api/stock/:partCd           → 컬러별 재고
+// GET /api/stock/:partCd/:colorCd  → 사이즈별 재고
+app.get('/api/stock/:partCd/:colorCd?', async (req, res) => {
+  const { partCd, colorCd } = req.params;
+  const result = await fetchStockInfo(partCd, colorCd || null);
+  if (!result) return res.status(404).json({ error: '재고 데이터 없음' });
+  res.json(result);
+});
+
 app.get('/api/video/:filename', (req, res) => {
   const filename = path.basename(req.params.filename); // path traversal 방지
   if (!filename.endsWith('.mp4')) return res.status(400).end();

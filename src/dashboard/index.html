@@ -4213,12 +4213,30 @@
       };
 
       // ─── Creatives Gallery Panel (Perplexity style) ──────────
+      // 품번 추출 (예: DXSH5336N, DMTS71063, DWWJ7N063 — 언더스코어로 구분된 영문4자+영숫자4~6자)
+      const extractPartCd = (name = '') => {
+        const m = name.match(/(?:^|_)([A-Z]{4}[A-Z0-9]{4,6})(?:_|$)/);
+        return m ? m[1] : null;
+      };
+
       const CreativesGalleryPanel = () => {
         const [galleryTab, setGalleryTab] = React.useState('ads'); // 'ads' | 'pmax-assets'
         const [pmaxAssets, setPmaxAssets] = React.useState([]);
         const [pmaxAssetLoading, setPmaxAssetLoading] = React.useState(false);
         const [pmaxAssetFieldFilter, setPmaxAssetFieldFilter] = React.useState('all');
         const [pmaxCampaignFilter, setPmaxCampaignFilter] = React.useState('all');
+        const [stockCache, setStockCache] = React.useState({});  // partCd → stock data
+        const [stockLoading, setStockLoading] = React.useState({});
+
+        const loadStock = (partCd) => {
+          if (!partCd || stockCache[partCd] !== undefined) return;
+          setStockLoading(p => ({ ...p, [partCd]: true }));
+          apiFetch(`${API}/stock/${partCd}`)
+            .then(r => r.json())
+            .then(data => setStockCache(p => ({ ...p, [partCd]: data })))
+            .catch(() => setStockCache(p => ({ ...p, [partCd]: null })))
+            .finally(() => setStockLoading(p => ({ ...p, [partCd]: false })));
+        };
 
         // 구글 선택 시 자동으로 PMAX 에셋 탭으로 전환
         React.useEffect(() => {
@@ -4723,7 +4741,8 @@
                   const isPmax = row.platform === 'google' && row.ad_id && row.ad_id.startsWith('ag_');
                   return (
                     <div key={`${row.ad_id}-${row.platform}-${idx}`}
-                      className="bg-white rounded-xl border border-ppl-border overflow-hidden hover:shadow-md hover:border-ppl-teal/40 transition-all group cursor-pointer">
+                      className="bg-white rounded-xl border border-ppl-border overflow-hidden hover:shadow-md hover:border-ppl-teal/40 transition-all group cursor-pointer"
+                      onMouseEnter={() => loadStock(extractPartCd(row.ad_name))}>
                       {/* Thumbnail */}
                       {row.library_thumb ? (
                         <div className="h-40 relative overflow-hidden bg-gray-50 flex items-center justify-center">
@@ -4811,6 +4830,50 @@
                           </div>
                         </div>
                       </div>
+
+                      {/* 재고 정보 */}
+                      {(() => {
+                        const partCd = extractPartCd(row.ad_name);
+                        if (!partCd) return null;
+                        const stock = stockCache[partCd];
+                        const loading = stockLoading[partCd];
+                        return (
+                          <div className="mx-3 mb-3 px-2.5 py-2 bg-slate-50 rounded-lg border border-slate-200 text-[10px]">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="font-bold text-slate-500 uppercase tracking-wider">재고 · {partCd}</span>
+                              {stock && stock.days_of_supply != null && (
+                                <span className={`font-bold px-1.5 py-0.5 rounded ${stock.days_of_supply <= 7 ? 'bg-red-100 text-red-600' : stock.days_of_supply <= 14 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                                  {stock.days_of_supply}일치
+                                </span>
+                              )}
+                            </div>
+                            {loading && <p className="text-slate-400">조회 중...</p>}
+                            {!loading && stock === null && <p className="text-slate-400">재고 없음</p>}
+                            {!loading && stock && (
+                              <div className="space-y-0.5">
+                                {stock.sizes && stock.sizes.map(s => (
+                                  <div key={s.size} className="flex justify-between">
+                                    <span className="text-slate-500">{s.size}</span>
+                                    <span className={`font-semibold ${s.wh === 0 ? 'text-red-500' : s.wh <= 5 ? 'text-amber-600' : 'text-slate-700'}`}>
+                                      창고 {s.wh} / 전체 {s.total}
+                                    </span>
+                                  </div>
+                                ))}
+                                {stock.colors && stock.colors.slice(0, 3).map(c => (
+                                  <div key={c.color} className="flex justify-between">
+                                    <span className="text-slate-500">{c.color}</span>
+                                    <span className="font-semibold text-slate-700">창고 {c.wh} / 전체 {c.total}</span>
+                                  </div>
+                                ))}
+                                <div className="flex justify-between pt-0.5 border-t border-slate-200 mt-1">
+                                  <span className="text-slate-400">7일 판매 / 일평균</span>
+                                  <span className="font-semibold text-slate-600">{stock.sale_7d}개 / {stock.daily_avg}개</span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   );
                 })}

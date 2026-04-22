@@ -15,7 +15,7 @@ import db, { initDatabase } from './utils/db.js';
 import logger from './utils/logger.js';
 import DataCollector from './analytics/collector.js';
 import { getOptimizer, getPipeline, getTemplateEngine, getABTestEngine, getAudienceManager } from './utils/services.js';
-import { getMetaClient, getGoogleClient, getNaverClient, fetchStockInfo } from './utils/clients.js';
+import { getMetaClient, getGoogleClient, getNaverClient, fetchStockInfo, debugSaleShops } from './utils/clients.js';
 import crypto from 'crypto';
 import path from 'path';
 import { getAdapter } from './utils/platform-adapter.js';
@@ -2746,7 +2746,7 @@ app.post('/api/rules', (req, res) => {
 
   const {
     name, platform = 'meta', campaign_id, campaign_name,
-    roas_off, roas_on = null, min_spend = 10000, lookback_days = 7,
+    roas_off, roas_on = null, min_spend = 10000, lookback_days = 7, stock_days_off = null,
   } = req.body;
 
   if (!['meta', 'google'].includes(platform)) {
@@ -2761,11 +2761,12 @@ app.post('/api/rules', (req, res) => {
 
   const result = db.prepare(`
     INSERT INTO ad_automation_rules
-      (name, platform, campaign_id, campaign_name, roas_off, roas_on, min_spend, lookback_days)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (name, platform, campaign_id, campaign_name, roas_off, roas_on, min_spend, lookback_days, stock_days_off)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(name, platform, String(campaign_id), campaign_name || null,
     parseFloat(roas_off), roas_on != null ? parseFloat(roas_on) : null,
-    parseFloat(min_spend), parseInt(lookback_days) || 7);
+    parseFloat(min_spend), parseInt(lookback_days) || 7,
+    stock_days_off != null ? parseInt(stock_days_off) : null);
 
   const created = db.prepare(`SELECT * FROM ad_automation_rules WHERE id = ?`).get(result.lastInsertRowid);
   logger.info('Ad automation rule created', { id: result.lastInsertRowid, name });
@@ -2781,17 +2782,20 @@ app.put('/api/rules/:id', (req, res) => {
   if (!rule) return res.status(404).json({ error: 'Rule not found' });
 
   const {
-    name, campaign_name, roas_off, roas_on, min_spend, lookback_days, enabled,
+    name, campaign_name, roas_off, roas_on, min_spend, lookback_days, enabled, stock_days_off,
   } = req.body;
 
   const updates = {
-    name:          name          ?? rule.name,
-    campaign_name: campaign_name ?? rule.campaign_name,
-    roas_off:      roas_off      != null ? parseFloat(roas_off)      : rule.roas_off,
-    roas_on:       roas_on       != null ? parseFloat(roas_on)       : rule.roas_on,
-    min_spend:     min_spend     != null ? parseFloat(min_spend)     : rule.min_spend,
-    lookback_days: lookback_days != null ? parseInt(lookback_days)   : rule.lookback_days,
-    enabled:       enabled       != null ? (enabled ? 1 : 0)         : rule.enabled,
+    name:           name           ?? rule.name,
+    campaign_name:  campaign_name  ?? rule.campaign_name,
+    roas_off:       roas_off       != null ? parseFloat(roas_off)    : rule.roas_off,
+    roas_on:        roas_on        != null ? parseFloat(roas_on)     : rule.roas_on,
+    min_spend:      min_spend      != null ? parseFloat(min_spend)   : rule.min_spend,
+    lookback_days:  lookback_days  != null ? parseInt(lookback_days) : rule.lookback_days,
+    enabled:        enabled        != null ? (enabled ? 1 : 0)       : rule.enabled,
+    stock_days_off: 'stock_days_off' in req.body
+      ? (stock_days_off != null ? parseInt(stock_days_off) : null)
+      : rule.stock_days_off,
   };
 
   if (updates.roas_on != null && updates.roas_on <= updates.roas_off) {
@@ -2801,10 +2805,10 @@ app.put('/api/rules/:id', (req, res) => {
   db.prepare(`
     UPDATE ad_automation_rules
     SET name=?, campaign_name=?, roas_off=?, roas_on=?, min_spend=?, lookback_days=?, enabled=?,
-        updated_at=datetime('now')
+        stock_days_off=?, updated_at=datetime('now')
     WHERE id=?
   `).run(updates.name, updates.campaign_name, updates.roas_off, updates.roas_on,
-    updates.min_spend, updates.lookback_days, updates.enabled, ruleId);
+    updates.min_spend, updates.lookback_days, updates.enabled, updates.stock_days_off, ruleId);
 
   const updated = db.prepare(`SELECT * FROM ad_automation_rules WHERE id = ?`).get(ruleId);
   res.json(updated);
@@ -2980,6 +2984,12 @@ app.get('/api/stock/:partCd/:colorCd?', async (req, res) => {
   const result = await fetchStockInfo(partCd, colorCd || null);
   if (!result) return res.status(404).json({ error: '재고 데이터 없음' });
   res.json(result);
+});
+
+// GET /api/stock-debug/:partCd → 판매 SHOP_ID 진단
+app.get('/api/stock-debug/:partCd', async (req, res) => {
+  const rows = await debugSaleShops(req.params.partCd);
+  res.json({ partCd: req.params.partCd, brand: process.env.STOCK_BRAND_CD || 'X', shops: rows });
 });
 
 app.get('/api/video/:filename', (req, res) => {

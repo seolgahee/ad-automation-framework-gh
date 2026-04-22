@@ -39,8 +39,8 @@ export function getNaverClient() {
   return _naverClient;
 }
 
-/** Snowflake 재고 조회 (fetchStockInfo 직접 export) */
-export const { fetchStockInfo } = snowflakeClient;
+/** Snowflake 재고 조회 */
+export const { fetchStockInfo, debugSaleShops } = snowflakeClient;
 
 /** Reset clients (useful for testing or credential rotation) */
 export function resetClients() {

@@ -3,30 +3,38 @@
  *
  * 재고 데이터 조회 모듈 (Discovery 브랜드 기준)
  * Tables: DW_SCS_DACUM (재고), DB_PRDT (상품명), DW_SH_SCS_D (판매)
+ * 인증: RSA 키페어 (SNOWFLAKE_JWT) — 서비스 계정 SVC_ORG_PF
  */
 import snowflake from 'snowflake-sdk';
+import fs from 'fs';
 import logger from '../utils/logger.js';
 
-const ACCOUNT   = process.env.SNOWFLAKE_ACCOUNT;
-const USER      = process.env.SNOWFLAKE_USER;
-const PASSWORD  = process.env.SNOWFLAKE_PASSWORD;
-const DATABASE  = process.env.SNOWFLAKE_DATABASE;
-const WAREHOUSE = process.env.SNOWFLAKE_WAREHOUSE;
-const ROLE      = process.env.SNOWFLAKE_ROLE;
-const SCHEMA    = process.env.SNOWFLAKE_STOCK_SCHEMA || 'PRCS';
-const BRAND_CD  = process.env.STOCK_BRAND_CD         || 'X';
-const SHOP_ID   = process.env.JASAMOL_SHOP_ID        || '30001';
+const ACCOUNT          = process.env.SNOWFLAKE_ACCOUNT;
+const USER             = process.env.SNOWFLAKE_USER;
+const PRIVATE_KEY_PATH = process.env.SNOWFLAKE_PRIVATE_KEY_PATH;
+const DATABASE         = process.env.SNOWFLAKE_DATABASE;
+const WAREHOUSE        = process.env.SNOWFLAKE_WAREHOUSE;
+const ROLE             = process.env.SNOWFLAKE_ROLE;
+const SCHEMA           = process.env.SNOWFLAKE_STOCK_SCHEMA || 'PRCS';
+const BRAND_CD         = process.env.STOCK_BRAND_CD         || 'X';
+const SHOP_ID          = process.env.JASAMOL_SHOP_ID        || '30001';
 
 const SIZE_ORDER = { XS: 0, S: 1, M: 2, L: 3, XL: 4, XXL: 5, XXXL: 6 };
 
+function loadPrivateKey() {
+  if (!PRIVATE_KEY_PATH) throw new Error('SNOWFLAKE_PRIVATE_KEY_PATH not set');
+  return fs.readFileSync(PRIVATE_KEY_PATH, 'utf8');
+}
+
 function createConnection() {
   return snowflake.createConnection({
-    account:   ACCOUNT,
-    username:  USER,
-    password:  PASSWORD,
-    database:  DATABASE,
-    warehouse: WAREHOUSE,
-    role:      ROLE,
+    account:          ACCOUNT,
+    username:         USER,
+    authenticator:    'SNOWFLAKE_JWT',
+    privateKey:       loadPrivateKey(),
+    database:         DATABASE,
+    warehouse:        WAREHOUSE,
+    role:             ROLE,
   });
 }
 
@@ -98,7 +106,7 @@ export async function fetchStockInfo(partCd, colorCd = null) {
       `, [BRAND_CD, partCd, BRAND_CD, partCd]);
     }
 
-    // 최근 7일 자사몰 판매량
+    // 최근 7일 자사몰 판매량 — SHOP_ID=30004 ((주)에프앤에프)
     const colorFilter = colorCd ? 'AND COLOR_CD = ?' : '';
     const saleParams  = colorCd
       ? [BRAND_CD, SHOP_ID, partCd, colorCd]
@@ -150,4 +158,27 @@ export async function fetchStockInfo(partCd, colorCd = null) {
   }
 }
 
-export default { fetchStockInfo };
+/** 진단용: 품번의 실제 SHOP_ID 목록 조회 */
+export async function debugSaleShops(partCd) {
+  const conn = createConnection();
+  try {
+    await connectAsync(conn);
+    const rows = await executeAsync(conn, `
+      SELECT SHOP_ID, SUM(SALE_NML_QTY - SALE_RET_QTY) AS SALE_QTY
+      FROM ${DATABASE}.${SCHEMA}.DW_SH_SCS_D
+      WHERE BRD_CD = ? AND PART_CD = ?
+        AND DT >= CURRENT_DATE - 7 AND DT < CURRENT_DATE
+      GROUP BY SHOP_ID
+      ORDER BY SALE_QTY DESC
+      LIMIT 20
+    `, [BRAND_CD, partCd]);
+    return rows;
+  } catch (err) {
+    logger.warn(`debugSaleShops 실패 (${partCd}): ${err.message}`);
+    return null;
+  } finally {
+    await destroyAsync(conn);
+  }
+}
+
+export default { fetchStockInfo, debugSaleShops };

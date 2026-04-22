@@ -14,6 +14,10 @@ import db from '../utils/db.js';
 import logger from '../utils/logger.js';
 import notifier from '../utils/notifier.js';
 import { krwFmt } from '../utils/format.js';
+import { fetchStockInfo } from '../snowflake/client.js';
+
+// 광고명에서 품번 추출 (예: DXSH5336N, DMTS71063)
+const PART_CD_RE = /(?:^|_)([A-Z]{4}[A-Z0-9]{4,6})(?:_|$)/;
 
 export class RuleEngine {
   constructor(metaClient) {
@@ -83,20 +87,45 @@ export class RuleEngine {
       return [];
     }
 
+    // 재고 조건이 설정된 경우 품번별 재고 일괄 조회
+    const stockMap = {};
+    if (rule.stock_days_off != null) {
+      const partCds = [...new Set(
+        adStats.map(a => (a.ad_name?.match(PART_CD_RE) || [])[1]).filter(Boolean)
+      )];
+      await Promise.all(partCds.map(async (partCd) => {
+        const info = await fetchStockInfo(partCd).catch(() => null);
+        stockMap[partCd] = info;
+      }));
+    }
+
     const actions = [];
     const pausedAds = [];
     const enabledAds = [];
+    const stockPausedAds = [];
 
     for (const ad of adStats) {
       let action = null;
       let reason = '';
 
-      if (ad.roas < rule.roas_off) {
-        action = 'PAUSED';
-        reason = `ROAS ${ad.roas.toFixed(2)} < 기준 ${rule.roas_off} (지출 ₩${krwFmt.format(Math.round(ad.total_spend))})`;
-      } else if (rule.roas_on != null && ad.roas >= rule.roas_on) {
-        action = 'ENABLED';
-        reason = `ROAS ${ad.roas.toFixed(2)} ≥ 복구기준 ${rule.roas_on} (지출 ₩${krwFmt.format(Math.round(ad.total_spend))})`;
+      // 재고 소진 임박 체크 (ROAS보다 우선)
+      if (rule.stock_days_off != null) {
+        const partCd = (ad.ad_name?.match(PART_CD_RE) || [])[1];
+        const stockInfo = partCd ? stockMap[partCd] : null;
+        if (stockInfo && stockInfo.days_of_supply != null && stockInfo.days_of_supply <= rule.stock_days_off) {
+          action = 'PAUSED';
+          reason = `재고 소진 임박 — ${stockInfo.days_of_supply}일치 (기준: ${rule.stock_days_off}일, 일평균 판매 ${stockInfo.daily_avg}개)`;
+        }
+      }
+
+      if (!action) {
+        if (ad.roas < rule.roas_off) {
+          action = 'PAUSED';
+          reason = `ROAS ${ad.roas.toFixed(2)} < 기준 ${rule.roas_off} (지출 ₩${krwFmt.format(Math.round(ad.total_spend))})`;
+        } else if (rule.roas_on != null && ad.roas >= rule.roas_on) {
+          action = 'ENABLED';
+          reason = `ROAS ${ad.roas.toFixed(2)} ≥ 복구기준 ${rule.roas_on} (지출 ₩${krwFmt.format(Math.round(ad.total_spend))})`;
+        }
       }
 
       if (!action) continue;
@@ -117,20 +146,24 @@ export class RuleEngine {
       this._logAction(rule.id, ad, action, ad.roas, ad.total_spend, reason);
       actions.push({ adId: ad.ad_id, adName: ad.ad_name, action, roas: ad.roas, reason });
 
-      if (action === 'PAUSED') pausedAds.push(ad);
+      if (action === 'PAUSED') {
+        if (reason.startsWith('재고')) stockPausedAds.push({ ...ad, reason });
+        else pausedAds.push(ad);
+      }
       if (action === 'ENABLED') enabledAds.push(ad);
     }
 
     this._updateLastRun(rule.id);
 
     // Slack 알림 (변경된 소재가 있을 때만)
-    if (pausedAds.length + enabledAds.length > 0) {
-      await this._notify(rule, pausedAds, enabledAds);
+    if (pausedAds.length + enabledAds.length + stockPausedAds.length > 0) {
+      await this._notify(rule, pausedAds, enabledAds, stockPausedAds);
     }
 
     logger.info(`RuleEngine rule ${rule.id} done`, {
       evaluated: adStats.length,
       paused: pausedAds.length,
+      stock_paused: stockPausedAds.length,
       enabled: enabledAds.length,
     });
 
@@ -150,12 +183,20 @@ export class RuleEngine {
     ).run(ruleId);
   }
 
-  async _notify(rule, pausedAds, enabledAds) {
+  async _notify(rule, pausedAds, enabledAds, stockPausedAds = []) {
     let msg = `🤖 *자동 규칙 실행 — ${rule.name}*\n`;
     msg += `캠페인: ${rule.campaign_name || rule.campaign_id} | 기준 ROAS: ${rule.roas_off}\n\n`;
 
+    if (stockPausedAds.length > 0) {
+      msg += `*📦 재고 소진 임박 중지 (${stockPausedAds.length}개)*\n`;
+      for (const ad of stockPausedAds) {
+        msg += `• ${ad.ad_name} — ${ad.reason}\n`;
+      }
+      msg += '\n';
+    }
+
     if (pausedAds.length > 0) {
-      msg += `*⏸ 일시중지 (${pausedAds.length}개)*\n`;
+      msg += `*⏸ ROAS 기준 일시중지 (${pausedAds.length}개)*\n`;
       for (const ad of pausedAds) {
         msg += `• ${ad.ad_name} — ROAS ${ad.roas.toFixed(2)}\n`;
       }
@@ -169,7 +210,7 @@ export class RuleEngine {
     }
 
     await notifier.broadcast(msg, {
-      severity: pausedAds.length > 0 ? 'warning' : 'info',
+      severity: stockPausedAds.length > 0 || pausedAds.length > 0 ? 'warning' : 'info',
     }).catch(e => logger.warn('RuleEngine notify failed', { error: e.message }));
   }
 }

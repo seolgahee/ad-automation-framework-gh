@@ -65,6 +65,7 @@ export class RuleEngine {
     const adStats = db.prepare(`
       SELECT
         ad_id,
+        MAX(adset_id)         AS adset_id,
         ad_name,
         campaign_id,
         SUM(spend)            AS total_spend,
@@ -87,9 +88,10 @@ export class RuleEngine {
       return [];
     }
 
-    // 재고 조건이 설정된 경우 품번별 재고 일괄 조회
+    // 재고 조건(소진 임박 or 예산 증액)이 설정된 경우 품번별 재고 일괄 조회
     const stockMap = {};
-    if (rule.stock_days_off != null) {
+    const needsStock = rule.stock_days_off != null || (rule.roas_best != null && rule.daily_cap_increase_pct != null);
+    if (needsStock) {
       const partCds = [...new Set(
         adStats.map(a => (a.ad_name?.match(PART_CD_RE) || [])[1]).filter(Boolean)
       )];
@@ -103,15 +105,16 @@ export class RuleEngine {
     const pausedAds = [];
     const enabledAds = [];
     const stockPausedAds = [];
+    const budgetIncreasedAds = [];
 
     for (const ad of adStats) {
       let action = null;
       let reason = '';
+      const partCd = (ad.ad_name?.match(PART_CD_RE) || [])[1];
+      const stockInfo = partCd ? stockMap[partCd] : null;
 
       // 재고 소진 임박 체크 (ROAS보다 우선)
       if (rule.stock_days_off != null) {
-        const partCd = (ad.ad_name?.match(PART_CD_RE) || [])[1];
-        const stockInfo = partCd ? stockMap[partCd] : null;
         if (stockInfo && stockInfo.days_of_supply != null && stockInfo.days_of_supply <= rule.stock_days_off) {
           action = 'PAUSED';
           reason = `재고 소진 임박 — ${stockInfo.days_of_supply}일치 (기준: ${rule.stock_days_off}일, 일평균 판매 ${stockInfo.daily_avg}개)`;
@@ -128,19 +131,42 @@ export class RuleEngine {
         }
       }
 
+      // 예산 증액: 재고 안전(≥15일) + 최우수 ROAS 조건 (다른 액션이 없을 때)
+      if (!action && rule.roas_best != null && rule.daily_cap_increase_pct != null && ad.roas >= rule.roas_best) {
+        const stockSafe = stockInfo == null || stockInfo.days_of_supply == null || stockInfo.days_of_supply >= 15;
+        if (stockSafe && rule.platform === 'meta' && this.meta && ad.adset_id) {
+          try {
+            const adSets = await this.meta.getAdSets(rule.campaign_id);
+            const adSet = adSets.find(s => s.id === ad.adset_id);
+            if (adSet?.daily_budget) {
+              const oldBudget = parseInt(adSet.daily_budget);
+              const newBudget = Math.round(oldBudget * (1 + rule.daily_cap_increase_pct / 100));
+              await this.meta.updateAdSetBudget(ad.adset_id, newBudget);
+              action = 'BUDGET_INCREASED';
+              const days = stockInfo?.days_of_supply ?? '?';
+              reason = `재고 안전 ${days}일치 · ROAS ${ad.roas.toFixed(2)} ≥ 기준 ${rule.roas_best} → 일예산 +${rule.daily_cap_increase_pct}% (₩${krwFmt.format(oldBudget)} → ₩${krwFmt.format(newBudget)})`;
+              budgetIncreasedAds.push({ ...ad, reason, oldBudget, newBudget });
+            }
+          } catch (budgetErr) {
+            logger.error(`RuleEngine: budget update failed for adset ${ad.adset_id}`, { error: budgetErr.message });
+          }
+        }
+      }
+
       if (!action) continue;
 
-      // Meta API 호출
-      try {
-        const metaStatus = action === 'PAUSED' ? 'PAUSED' : 'ACTIVE';
-        if (rule.platform === 'meta' && this.meta) {
-          await this.meta.updateAdStatus(ad.ad_id, metaStatus);
+      // Meta API 호출 (ON/OFF 전환)
+      if (action === 'PAUSED' || action === 'ENABLED') {
+        try {
+          const metaStatus = action === 'PAUSED' ? 'PAUSED' : 'ACTIVE';
+          if (rule.platform === 'meta' && this.meta) {
+            await this.meta.updateAdStatus(ad.ad_id, metaStatus);
+          }
+        } catch (apiErr) {
+          logger.error(`RuleEngine: API call failed for ad ${ad.ad_id}`, { error: apiErr.message });
+          this._logAction(rule.id, ad, 'ERROR', ad.roas, ad.total_spend, apiErr.message);
+          continue;
         }
-        // Google 에셋은 별도 구현 필요 (현재는 로그만)
-      } catch (apiErr) {
-        logger.error(`RuleEngine: API call failed for ad ${ad.ad_id}`, { error: apiErr.message });
-        this._logAction(rule.id, ad, 'ERROR', ad.roas, ad.total_spend, apiErr.message);
-        continue;
       }
 
       this._logAction(rule.id, ad, action, ad.roas, ad.total_spend, reason);
@@ -156,8 +182,8 @@ export class RuleEngine {
     this._updateLastRun(rule.id);
 
     // Slack 알림 (변경된 소재가 있을 때만)
-    if (pausedAds.length + enabledAds.length + stockPausedAds.length > 0) {
-      await this._notify(rule, pausedAds, enabledAds, stockPausedAds);
+    if (pausedAds.length + enabledAds.length + stockPausedAds.length + budgetIncreasedAds.length > 0) {
+      await this._notify(rule, pausedAds, enabledAds, stockPausedAds, budgetIncreasedAds);
     }
 
     logger.info(`RuleEngine rule ${rule.id} done`, {
@@ -165,6 +191,7 @@ export class RuleEngine {
       paused: pausedAds.length,
       stock_paused: stockPausedAds.length,
       enabled: enabledAds.length,
+      budget_increased: budgetIncreasedAds.length,
     });
 
     return actions;
@@ -183,7 +210,7 @@ export class RuleEngine {
     ).run(ruleId);
   }
 
-  async _notify(rule, pausedAds, enabledAds, stockPausedAds = []) {
+  async _notify(rule, pausedAds, enabledAds, stockPausedAds = [], budgetIncreasedAds = []) {
     let msg = `🤖 *자동 규칙 실행 — ${rule.name}*\n`;
     msg += `캠페인: ${rule.campaign_name || rule.campaign_id} | 기준 ROAS: ${rule.roas_off}\n\n`;
 
@@ -206,6 +233,13 @@ export class RuleEngine {
       msg += `\n*▶️ 재개 (${enabledAds.length}개)*\n`;
       for (const ad of enabledAds) {
         msg += `• ${ad.ad_name} — ROAS ${ad.roas.toFixed(2)}\n`;
+      }
+    }
+
+    if (budgetIncreasedAds.length > 0) {
+      msg += `\n*💰 예산 자동 증액 — 재고 안전 + 최우수 성과 (${budgetIncreasedAds.length}개)*\n`;
+      for (const ad of budgetIncreasedAds) {
+        msg += `• ${ad.ad_name} — ${ad.reason}\n`;
       }
     }
 

@@ -2220,6 +2220,39 @@ app.get('/api/ad-performance', async (req, res) => {
     return res.status(400).json({ error: 'Invalid platform' });
   }
 
+  // cumulative=true: SQLite에서 소재 라이브 시작일부터 전일까지 누적 집계
+  if (req.query.cumulative === 'true' && platform === 'meta') {
+    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    const allowedSorts = ['spend', 'roas', 'ctr', 'impressions', 'clicks', 'cpa', 'cpc', 'conversions'];
+    const sortKey = allowedSorts.includes(sort) ? sort : 'spend';
+    const sortDir = order === 'asc' ? 'ASC' : 'DESC';
+    const rows = db.prepare(`
+      SELECT
+        ad_id, ad_name,
+        MAX(adset_id)         AS adset_id,
+        MAX(adset_name)       AS adset_name,
+        campaign_id, MAX(campaign_name) AS campaign_name,
+        platform,
+        MIN(date_start)       AS launch_date,
+        SUM(impressions)      AS impressions,
+        SUM(clicks)           AS clicks,
+        SUM(spend)            AS spend,
+        SUM(conversions)      AS conversions,
+        SUM(conversion_value) AS conversion_value,
+        CASE WHEN SUM(clicks) > 0 THEN CAST(SUM(clicks) AS REAL) / SUM(impressions) ELSE 0 END AS ctr,
+        CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END AS cpc,
+        CASE WHEN SUM(spend) > 0 THEN SUM(conversion_value) / SUM(spend) ELSE 0 END AS roas,
+        CASE WHEN SUM(conversions) > 0 THEN SUM(spend) / SUM(conversions) ELSE 0 END AS cpa,
+        MAX(image_url)        AS image_url
+      FROM ad_performance
+      WHERE platform = 'meta' AND date_start <= ?
+      GROUP BY ad_id
+      HAVING spend > 0
+      ORDER BY ${sortKey} ${sortDir}
+    `).all(yesterday);
+    return res.json(rows);
+  }
+
   // ── Meta: 실시간 API 조회 + creative_library 연동 (5분 캐시) ────────
   if (platform === 'meta') {
     const meta = getMetaClient();
@@ -2747,6 +2780,7 @@ app.post('/api/rules', (req, res) => {
   const {
     name, platform = 'meta', campaign_id, campaign_name,
     roas_off, roas_on = null, min_spend = 10000, lookback_days = 7, stock_days_off = null,
+    roas_best = null, daily_cap_increase_pct = null,
   } = req.body;
 
   if (!['meta', 'google'].includes(platform)) {
@@ -2761,12 +2795,14 @@ app.post('/api/rules', (req, res) => {
 
   const result = db.prepare(`
     INSERT INTO ad_automation_rules
-      (name, platform, campaign_id, campaign_name, roas_off, roas_on, min_spend, lookback_days, stock_days_off)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (name, platform, campaign_id, campaign_name, roas_off, roas_on, min_spend, lookback_days, stock_days_off, roas_best, daily_cap_increase_pct)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(name, platform, String(campaign_id), campaign_name || null,
     parseFloat(roas_off), roas_on != null ? parseFloat(roas_on) : null,
     parseFloat(min_spend), parseInt(lookback_days) || 7,
-    stock_days_off != null ? parseInt(stock_days_off) : null);
+    stock_days_off != null ? parseInt(stock_days_off) : null,
+    roas_best != null ? parseFloat(roas_best) : null,
+    daily_cap_increase_pct != null ? parseFloat(daily_cap_increase_pct) : null);
 
   const created = db.prepare(`SELECT * FROM ad_automation_rules WHERE id = ?`).get(result.lastInsertRowid);
   logger.info('Ad automation rule created', { id: result.lastInsertRowid, name });
@@ -2783,19 +2819,23 @@ app.put('/api/rules/:id', (req, res) => {
 
   const {
     name, campaign_name, roas_off, roas_on, min_spend, lookback_days, enabled, stock_days_off,
+    roas_best, daily_cap_increase_pct,
   } = req.body;
 
   const updates = {
-    name:           name           ?? rule.name,
-    campaign_name:  campaign_name  ?? rule.campaign_name,
-    roas_off:       roas_off       != null ? parseFloat(roas_off)    : rule.roas_off,
-    roas_on:        roas_on        != null ? parseFloat(roas_on)     : rule.roas_on,
-    min_spend:      min_spend      != null ? parseFloat(min_spend)   : rule.min_spend,
-    lookback_days:  lookback_days  != null ? parseInt(lookback_days) : rule.lookback_days,
-    enabled:        enabled        != null ? (enabled ? 1 : 0)       : rule.enabled,
-    stock_days_off: 'stock_days_off' in req.body
-      ? (stock_days_off != null ? parseInt(stock_days_off) : null)
-      : rule.stock_days_off,
+    name:                  name              ?? rule.name,
+    campaign_name:         campaign_name     ?? rule.campaign_name,
+    roas_off:              roas_off          != null ? parseFloat(roas_off)           : rule.roas_off,
+    roas_on:               roas_on           != null ? parseFloat(roas_on)            : rule.roas_on,
+    min_spend:             min_spend         != null ? parseFloat(min_spend)          : rule.min_spend,
+    lookback_days:         lookback_days     != null ? parseInt(lookback_days)        : rule.lookback_days,
+    enabled:               enabled           != null ? (enabled ? 1 : 0)             : rule.enabled,
+    stock_days_off:        'stock_days_off' in req.body
+      ? (stock_days_off != null ? parseInt(stock_days_off) : null) : rule.stock_days_off,
+    roas_best:             'roas_best' in req.body
+      ? (roas_best != null ? parseFloat(roas_best) : null) : rule.roas_best,
+    daily_cap_increase_pct: 'daily_cap_increase_pct' in req.body
+      ? (daily_cap_increase_pct != null ? parseFloat(daily_cap_increase_pct) : null) : rule.daily_cap_increase_pct,
   };
 
   if (updates.roas_on != null && updates.roas_on <= updates.roas_off) {
@@ -2805,10 +2845,11 @@ app.put('/api/rules/:id', (req, res) => {
   db.prepare(`
     UPDATE ad_automation_rules
     SET name=?, campaign_name=?, roas_off=?, roas_on=?, min_spend=?, lookback_days=?, enabled=?,
-        stock_days_off=?, updated_at=datetime('now')
+        stock_days_off=?, roas_best=?, daily_cap_increase_pct=?, updated_at=datetime('now')
     WHERE id=?
   `).run(updates.name, updates.campaign_name, updates.roas_off, updates.roas_on,
-    updates.min_spend, updates.lookback_days, updates.enabled, updates.stock_days_off, ruleId);
+    updates.min_spend, updates.lookback_days, updates.enabled, updates.stock_days_off,
+    updates.roas_best, updates.daily_cap_increase_pct, ruleId);
 
   const updated = db.prepare(`SELECT * FROM ad_automation_rules WHERE id = ?`).get(ruleId);
   res.json(updated);
@@ -2976,6 +3017,125 @@ app.post('/api/generate-video', videoUpload.array('images', 20), async (req, res
 });
 
 // 생성된 영상 파일 서빙
+// ─── 재고 현황 대시보드 ───────────────────────────────────────────
+const INVENTORY_PART_CD_RE = /(?:^|_)([A-Z]{4}[A-Z0-9]{4,6})(?:_|$)/;
+const INVENTORY_LAUNCH_DATE_RE = /^(\d{2})(\d{2})(\d{2})_/;
+
+/** GET /api/inventory-dashboard — 품번별 재고 현황 + Meta 누적 지출 통합 */
+app.get('/api/inventory-dashboard', async (req, res) => {
+  try {
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+
+  const adRows = db.prepare(`
+    SELECT
+      ad_id,
+      ad_name,
+      MIN(date_start)       AS first_date,
+      SUM(spend)            AS total_spend,
+      SUM(conversion_value) AS total_value,
+      SUM(impressions)      AS total_impressions,
+      SUM(clicks)           AS total_clicks
+    FROM ad_performance
+    WHERE platform = 'meta'
+      AND date_start <= ?
+    GROUP BY ad_id
+    HAVING total_spend > 0
+  `).all(yesterday);
+
+  const partMap = {};
+  for (const row of adRows) {
+    const partMatch = row.ad_name?.match(INVENTORY_PART_CD_RE);
+    if (!partMatch) continue;
+    const partCd = partMatch[1];
+
+    const dateMatch = row.ad_name?.match(INVENTORY_LAUNCH_DATE_RE);
+    let launchDate = row.first_date;
+    if (dateMatch) {
+      launchDate = `20${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+    }
+
+    if (!partMap[partCd]) {
+      partMap[partCd] = { part_cd: partCd, launch_date: launchDate, total_spend: 0, total_value: 0, total_impressions: 0, total_clicks: 0, ad_count: 0, ads: [] };
+    }
+    const p = partMap[partCd];
+    if (launchDate < p.launch_date) p.launch_date = launchDate;
+    p.total_spend += row.total_spend;
+    p.total_value += row.total_value;
+    p.total_impressions += row.total_impressions;
+    p.total_clicks += row.total_clicks;
+    p.ad_count += 1;
+    p.ads.push({
+      ad_id: row.ad_id,
+      ad_name: row.ad_name,
+      launch_date: launchDate,
+      spend: row.total_spend,
+      value: row.total_value,
+      impressions: row.total_impressions,
+      clicks: row.total_clicks,
+      roas: row.total_spend > 0 ? row.total_value / row.total_spend : 0,
+      cpc: row.total_clicks > 0 ? row.total_spend / row.total_clicks : 0,
+    });
+  }
+
+  const partCds = Object.keys(partMap);
+  if (partCds.length === 0) {
+    return res.json({ items: [], summary: { total_spend: 0, part_count: 0, danger_count: 0, caution_count: 0, safe_count: 0 } });
+  }
+
+  const stockResults = await Promise.all(partCds.map(pc => fetchStockInfo(pc).catch(() => null)));
+
+  const riskOrder = { danger: 0, caution: 1, safe: 2, no_sales: 3, none: 4 };
+  const items = partCds.map((pc, i) => {
+    const p = partMap[pc];
+    const stock = stockResults[i];
+    const days = stock?.days_of_supply;
+    let risk = 'none';
+    if (days == null) risk = 'no_sales';
+    else if (days <= 7) risk = 'danger';
+    else if (days <= 14) risk = 'caution';
+    else risk = 'safe';
+
+    const whStock = stock?.colors?.reduce((s, c) => s + (c.wh || 0), 0) ?? null;
+    const totalStock = stock?.colors?.reduce((s, c) => s + (c.total || 0), 0) ?? null;
+
+    return {
+      part_cd: pc,
+      prdt_nm: stock?.prdt_nm || null,
+      launch_date: p.launch_date,
+      total_spend: p.total_spend,
+      total_value: p.total_value,
+      total_impressions: p.total_impressions,
+      total_clicks: p.total_clicks,
+      ad_count: p.ad_count,
+      roas: p.total_spend > 0 ? p.total_value / p.total_spend : 0,
+      wh_stock: whStock,
+      total_stock: totalStock,
+      daily_avg: stock?.daily_avg ?? null,
+      sale_7d: stock?.sale_7d ?? null,
+      days_of_supply: days ?? null,
+      risk,
+      colors: stock?.colors || [],
+      ads: p.ads.sort((a, b) => b.spend - a.spend),
+    };
+  });
+
+  items.sort((a, b) => (riskOrder[a.risk] ?? 9) - (riskOrder[b.risk] ?? 9));
+
+  const summary = {
+    total_spend: items.reduce((s, i) => s + i.total_spend, 0),
+    part_count: items.length,
+    danger_count: items.filter(i => i.risk === 'danger').length,
+    caution_count: items.filter(i => i.risk === 'caution').length,
+    safe_count: items.filter(i => i.risk === 'safe').length,
+  };
+
+  res.json({ items, summary });
+  } catch (err) {
+    logger.error('inventory-dashboard error', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Snowflake 재고 조회 ──────────────────────────────────────────
 // GET /api/stock/:partCd           → 컬러별 재고
 // GET /api/stock/:partCd/:colorCd  → 사이즈별 재고

@@ -154,6 +154,23 @@ function migrateAddStockDaysOff() {
   db.exec(`ALTER TABLE ad_automation_rules ADD COLUMN stock_days_off INTEGER`);
 }
 
+function migrateAddBudgetIncrease() {
+  const tableExists = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='ad_automation_rules'`
+  ).get();
+  if (!tableExists) return;
+
+  const cols = db.prepare(`PRAGMA table_info(ad_automation_rules)`).all().map(c => c.name);
+  if (!cols.includes('roas_best')) {
+    logger.info('Adding roas_best column to ad_automation_rules');
+    db.exec(`ALTER TABLE ad_automation_rules ADD COLUMN roas_best REAL`);
+  }
+  if (!cols.includes('daily_cap_increase_pct')) {
+    logger.info('Adding daily_cap_increase_pct column to ad_automation_rules');
+    db.exec(`ALTER TABLE ad_automation_rules ADD COLUMN daily_cap_increase_pct REAL`);
+  }
+}
+
 /** Initialize all tables */
 export function initDatabase() {
   // Run migrations before CREATE TABLE IF NOT EXISTS (which would be a no-op on existing tables)
@@ -162,6 +179,7 @@ export function initDatabase() {
   migrateAddCampaignStopTime();
   migrateCreativeLibraryBlob();
   migrateAddStockDaysOff();
+  migrateAddBudgetIncrease();
 
   db.exec(`
     -- Campaign master data (unified across platforms)

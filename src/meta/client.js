@@ -266,6 +266,15 @@ export class MetaAdsClient extends BaseAdsClient {
     return { success: true, adId, status };
   }
 
+  /** Update an ad set's daily budget (KRW, no cents conversion) */
+  async updateAdSetBudget(adSetId, dailyBudget) {
+    this._ensureConfigured();
+    const adSet = new bizSdk.AdSet(adSetId);
+    await this._withTimeout(adSet.update([], { daily_budget: Math.round(dailyBudget) }), 'updateAdSetBudget');
+    logger.info('Meta adset budget updated', { adSetId, dailyBudget });
+    return { success: true, adSetId, dailyBudget };
+  }
+
   /** Create an ad linking creative to ad set */
   async createAd({ adSetId, creativeId, name, status = 'PAUSED', pixelId = null, conversionEvent = null }) {
     this._ensureConfigured();

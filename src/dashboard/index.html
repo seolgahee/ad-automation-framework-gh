@@ -129,6 +129,7 @@
       image: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>,
       zap: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>,
       video: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="2" y="4" width="15" height="16" rx="2"/><path d="m17 8 5-3v14l-5-3"/></svg>,
+      warehouse: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M22 8.35V20a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8.35A2 2 0 0 1 3.26 6.5l8-3.43a2 2 0 0 1 1.48 0l8 3.43A2 2 0 0 1 22 8.35Z"/><path d="M6 18h12"/><path d="M6 14h12"/><rect x="8" y="12" width="8" height="6" rx="1"/></svg>,
     };
 
     // ─── Model Badge (Perplexity style) ──────────────────────
@@ -3459,6 +3460,7 @@
       const [adPerfPlatform, setAdPerfPlatform] = useState('all');
       const defaultAdPerfSince = new Date(Date.now() - 6 * 86400000).toISOString().split('T')[0];
       const [adPerfDateRange, setAdPerfDateRange] = useState({ since: defaultAdPerfSince, until: today });
+      const [adPerfCumulative, setAdPerfCumulative] = useState(false);
       const [adPerfCampaignId, setAdPerfCampaignId] = useState('');
       const [adPerfAdsetId, setAdPerfAdsetId] = useState('');
       const [refreshingImageUrls, setRefreshingImageUrls] = useState(false);
@@ -3512,9 +3514,12 @@
         try {
           const platformParam = selectedPlatform !== 'all' ? `&platform=${selectedPlatform}` : '';
           const pParam = selectedPlatform !== 'all' ? `platform=${selectedPlatform}` : '';
-          const dateParams = `since=${adPerfDateRange.since}&until=${adPerfDateRange.until}`;
+          const useCumulative = adPerfCumulative && selectedPlatform === 'meta';
+          const queryParams = useCumulative
+            ? `cumulative=true&sort=${adPerfSort}&order=desc&platform=meta`
+            : `since=${adPerfDateRange.since}&until=${adPerfDateRange.until}&sort=${adPerfSort}&order=desc${platformParam}`;
           const [rows, filters] = await Promise.all([
-            apiFetch(`${API}/ad-performance?${dateParams}&sort=${adPerfSort}&order=desc${platformParam}`)
+            apiFetch(`${API}/ad-performance?${queryParams}`)
               .then(r => r.json()).then(d => Array.isArray(d) ? d : []).catch(() => []),
             apiFetch(`${API}/ad-performance/filters?${pParam}`)
               .then(r => r.json()).catch(() => null),
@@ -3530,7 +3535,7 @@
             setAdPerfFilterOptions({ campaigns, adsets });
           }
         } catch (err) { console.error('Ad performance fetch failed:', err); }
-      }, [adPerfDateRange, adPerfSort, selectedPlatform]);
+      }, [adPerfDateRange, adPerfSort, selectedPlatform, adPerfCumulative]);
 
       const fetchData = useCallback(async () => {
         try {
@@ -3718,6 +3723,7 @@
             {[
               { icon: Icons.home, label: 'Overview', view: 'overview' },
               { icon: Icons.zap, label: 'Automation', view: 'automation' },
+              { icon: Icons.warehouse, label: '재고 현황', view: 'inventory' },
               { icon: Icons.layers, label: 'Creatives', view: 'creatives' },
               { icon: Icons.upload, label: 'Creative Upload', view: 'meta-creative' },
               { icon: Icons.image, label: '소재 라이브러리', view: 'library' },
@@ -4543,7 +4549,15 @@
             {galleryTab === 'ads' && (<>
             {/* 날짜 선택기는 ads 탭에서만 노출 */}
             <div className="flex justify-end items-center gap-3">
-              <div className="flex items-center gap-2 bg-white border border-ppl-border rounded-2xl px-4 py-3 shadow-sm">
+              {selectedPlatform === 'meta' && (
+                <button
+                  onClick={() => setAdPerfCumulative(v => !v)}
+                  className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-colors ${adPerfCumulative ? 'bg-ppl-teal text-white border-ppl-teal' : 'bg-white text-ppl-sub border-ppl-border hover:bg-ppl-hover'}`}>
+                  <span>{adPerfCumulative ? '📊' : '📅'}</span>
+                  {adPerfCumulative ? '누적 모드 (라이브 시작 ~ 전일)' : '기간 설정'}
+                </button>
+              )}
+              {!adPerfCumulative && <div className="flex items-center gap-2 bg-white border border-ppl-border rounded-2xl px-4 py-3 shadow-sm">
                 <div className="flex flex-col">
                   <span className="text-[10px] text-ppl-sub mb-0.5">시작일</span>
                   <input
@@ -4566,7 +4580,7 @@
                     className="text-sm border border-ppl-border rounded-lg px-2 py-1 bg-white cursor-pointer"
                   />
                 </div>
-              </div>
+              </div>}
             </div>
 
             {/* Summary KPI Cards */}
@@ -5325,6 +5339,7 @@
         const [form, setForm] = React.useState({
           name: '', platform: 'meta', campaign_id: '', campaign_name: '',
           roas_off: '', roas_on: '', min_spend: '10000', lookback_days: '7', stock_days_off: '',
+          roas_best: '', daily_cap_increase_pct: '',
         });
         const [formError, setFormError] = React.useState('');
         const [saving, setSaving] = React.useState(false);
@@ -5341,7 +5356,7 @@
 
         const openNew = () => {
           setEditTarget(null);
-          setForm({ name: '', platform: 'meta', campaign_id: '', campaign_name: '', roas_off: '', roas_on: '', min_spend: '10000', lookback_days: '7', stock_days_off: '' });
+          setForm({ name: '', platform: 'meta', campaign_id: '', campaign_name: '', roas_off: '', roas_on: '', min_spend: '10000', lookback_days: '7', stock_days_off: '', roas_best: '', daily_cap_increase_pct: '' });
           setFormError('');
           setShowForm(true);
         };
@@ -5354,6 +5369,8 @@
             roas_off: String(rule.roas_off), roas_on: rule.roas_on != null ? String(rule.roas_on) : '',
             min_spend: String(rule.min_spend || 10000), lookback_days: String(rule.lookback_days || 7),
             stock_days_off: rule.stock_days_off != null ? String(rule.stock_days_off) : '',
+            roas_best: rule.roas_best != null ? String(rule.roas_best) : '',
+            daily_cap_increase_pct: rule.daily_cap_increase_pct != null ? String(rule.daily_cap_increase_pct) : '',
           });
           setFormError('');
           setShowForm(true);
@@ -5377,6 +5394,8 @@
             min_spend: parseFloat(form.min_spend) || 10000,
             lookback_days: parseInt(form.lookback_days) || 7,
             stock_days_off: form.stock_days_off !== '' ? parseInt(form.stock_days_off) : null,
+            roas_best: form.roas_best !== '' ? parseFloat(form.roas_best) : null,
+            daily_cap_increase_pct: form.daily_cap_increase_pct !== '' ? parseFloat(form.daily_cap_increase_pct) : null,
           };
           try {
             if (editTarget) {
@@ -5478,6 +5497,12 @@
                           {rule.stock_days_off != null && (
                             <span className="flex items-center gap-1">
                               <span className="text-amber-500 font-bold">재고</span> ≤ <strong>{rule.stock_days_off}일치</strong>
+                            </span>
+                          )}
+                          {rule.roas_best != null && rule.daily_cap_increase_pct != null && (
+                            <span className="flex items-center gap-1">
+                              <span className="text-green-600 font-bold">BEST</span> ≥ <strong>{rule.roas_best}</strong>
+                              <span className="text-green-600">→ +{rule.daily_cap_increase_pct}%</span>
                             </span>
                           )}
                           <span className="text-ppl-sub">|</span>
@@ -5582,6 +5607,22 @@
                         value={form.stock_days_off} onChange={e => setForm(f => ({ ...f, stock_days_off: e.target.value }))} />
                       <p className="text-[10px] text-ppl-sub mt-0.5">잔여 재고일수가 이 값 이하이면 ROAS와 무관하게 중지</p>
                     </div>
+                    <div className="border-t border-ppl-border pt-3 mt-1">
+                      <p className="text-xs font-bold text-green-700 mb-2">💰 최우수 성과 시 예산 자동 증액 <span className="font-normal text-ppl-sub">(선택 · 재고 안전 ≥15일 조건 포함)</span></p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs font-semibold text-green-700 block mb-1">Best ROAS 기준 <span className="font-normal text-ppl-sub">선택</span></label>
+                          <input type="number" step="0.1" min="0" className="w-full border border-green-200 rounded-lg px-3 py-2 text-sm" placeholder="예: 3.0"
+                            value={form.roas_best} onChange={e => setForm(f => ({ ...f, roas_best: e.target.value }))} />
+                        </div>
+                        <div>
+                          <label className="text-xs font-semibold text-green-700 block mb-1">증액 비율 (%) <span className="font-normal text-ppl-sub">선택</span></label>
+                          <input type="number" step="1" min="1" max="200" className="w-full border border-green-200 rounded-lg px-3 py-2 text-sm" placeholder="예: 20"
+                            value={form.daily_cap_increase_pct} onChange={e => setForm(f => ({ ...f, daily_cap_increase_pct: e.target.value }))} />
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-ppl-sub mt-1">ROAS ≥ Best 기준 AND 재고 ≥ 15일치 → AdSet 일예산 × (1 + 비율%)</p>
+                    </div>
                     {formError && <p className="text-xs text-red-500 font-medium">{formError}</p>}
                   </div>
                   <div className="flex gap-2 mt-5">
@@ -5623,6 +5664,236 @@
                 </div>
               </div>
             )}
+          </div>
+        );
+      };
+
+      // ─── Inventory Panel ────────────────────────────────────
+      const InventoryPanel = () => {
+        const [data, setData] = React.useState(null);
+        const [loading, setLoading] = React.useState(true);
+        const [sortKey, setSortKey] = React.useState('risk');
+        const [expanded, setExpanded] = React.useState({});
+
+        React.useEffect(() => {
+          setLoading(true);
+          apiFetch(`${API}/inventory-dashboard`)
+            .then(r => r.json())
+            .then(d => { setData(d); setLoading(false); })
+            .catch(() => setLoading(false));
+        }, []);
+
+        const riskConfig = {
+          danger:   { label: '위험',   color: 'bg-red-100 text-red-700 border border-red-200',    dot: 'bg-red-500' },
+          caution:  { label: '주의',   color: 'bg-amber-100 text-amber-700 border border-amber-200', dot: 'bg-amber-500' },
+          safe:     { label: '안전',   color: 'bg-green-100 text-green-700 border border-green-200',  dot: 'bg-green-500' },
+          no_sales: { label: '판매없음', color: 'bg-gray-100 text-gray-500 border border-gray-200',  dot: 'bg-gray-400' },
+          none:     { label: '-',     color: 'bg-gray-100 text-gray-400 border border-gray-200',  dot: 'bg-gray-300' },
+        };
+
+        const fmtKrw = v => v == null ? '-' : '₩' + Math.round(v).toLocaleString('ko-KR');
+        const fmtNum = v => v == null ? '-' : Math.round(v).toLocaleString('ko-KR');
+        const fmtRoas = v => v == null || v === 0 ? '-' : v.toFixed(2);
+
+        const sortedItems = (data?.items || []).slice().sort((a, b) => {
+          const riskOrder = { danger: 0, caution: 1, safe: 2, no_sales: 3, none: 4 };
+          if (sortKey === 'risk') return (riskOrder[a.risk] ?? 9) - (riskOrder[b.risk] ?? 9);
+          if (sortKey === 'spend') return (b.total_spend || 0) - (a.total_spend || 0);
+          if (sortKey === 'days') return (a.days_of_supply ?? 9999) - (b.days_of_supply ?? 9999);
+          if (sortKey === 'roas') return (b.roas || 0) - (a.roas || 0);
+          return 0;
+        });
+
+        if (loading) return <div className="flex items-center justify-center h-64 text-ppl-sub">재고 데이터 로딩 중...</div>;
+        if (!data) return <div className="flex items-center justify-center h-64 text-red-500">데이터 로드 실패</div>;
+
+        const { summary } = data;
+
+        return (
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-xl font-semibold text-ppl-text">재고 현황</h2>
+              <p className="text-sm text-ppl-sub mt-0.5">소재명에서 품번 자동 파싱 · 재고 전일자 기준 · Meta 누적 지출</p>
+            </div>
+
+            {/* 요약 카드 */}
+            <div className="grid grid-cols-4 gap-4">
+              {[
+                { label: 'Meta 총 지출', value: fmtKrw(summary.total_spend), color: 'text-ppl-text' },
+                { label: '🔴 위험 품번', value: `${summary.danger_count}개`, color: 'text-red-600' },
+                { label: '🟡 주의 품번', value: `${summary.caution_count}개`, color: 'text-amber-600' },
+                { label: '🟢 안전 품번', value: `${summary.safe_count}개`, color: 'text-green-600' },
+              ].map((c, i) => (
+                <div key={i} className="bg-white border border-ppl-border rounded-xl p-4">
+                  <p className="text-xs text-ppl-sub mb-1">{c.label}</p>
+                  <p className={`text-2xl font-bold ${c.color}`}>{c.value}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* 정렬 */}
+            <div className="flex gap-2">
+              {[['risk', '위험도순'], ['spend', '지출순'], ['days', '재고일수순'], ['roas', 'ROAS순']].map(([k, l]) => (
+                <button key={k} onClick={() => setSortKey(k)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${sortKey === k ? 'bg-ppl-teal text-white border-ppl-teal' : 'bg-white text-ppl-sub border-ppl-border hover:bg-ppl-hover'}`}>
+                  {l}
+                </button>
+              ))}
+            </div>
+
+            {/* 테이블 */}
+            <div className="bg-white border border-ppl-border rounded-xl overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-ppl-bg border-b border-ppl-border">
+                  <tr>
+                    {['위험도', '품번', '상품명', '창고재고', '전체재고', '재고일수', '일평균판매', '라이브시작', 'Meta 누적지출', 'ROAS', '소재수'].map(h => (
+                      <th key={h} className="text-left px-3 py-2.5 text-xs font-medium text-ppl-sub whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedItems.length === 0 ? (
+                    <tr><td colSpan="11" className="text-center py-12 text-ppl-sub">데이터가 없습니다. Meta 광고 성과 수집 후 확인하세요.</td></tr>
+                  ) : sortedItems.map((item, i) => {
+                    const rc = riskConfig[item.risk] || riskConfig.none;
+                    const isOpen = !!expanded[item.part_cd];
+                    const hasColors = item.colors && item.colors.length > 0;
+                    const hasAds = item.ads && item.ads.length > 0;
+                    const canExpand = hasColors || hasAds;
+                    const dailyAvg = item.daily_avg || 0;
+                    return (
+                      <React.Fragment key={i}>
+                        <tr
+                          className={`border-b border-ppl-border hover:bg-ppl-bg transition-colors ${canExpand ? 'cursor-pointer' : ''} ${isOpen ? 'bg-ppl-bg' : ''}`}
+                          onClick={() => canExpand && setExpanded(e => ({ ...e, [item.part_cd]: !e[item.part_cd] }))}
+                        >
+                          <td className="px-3 py-3">
+                            <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${rc.color}`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${rc.dot}`}></span>
+                              {rc.label}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3">
+                            <div className="flex items-center gap-1.5">
+                              {canExpand && (
+                                <span className={`text-ppl-sub transition-transform ${isOpen ? 'rotate-90' : ''}`} style={{display:'inline-block'}}>▶</span>
+                              )}
+                              <span className="font-mono text-xs font-semibold text-ppl-text">{item.part_cd}</span>
+                            </div>
+                          </td>
+                          <td className="px-3 py-3 text-xs text-ppl-sub max-w-[160px] truncate" title={item.prdt_nm}>{item.prdt_nm || '-'}</td>
+                          <td className="px-3 py-3 text-right tabular-nums">{fmtNum(item.wh_stock)}</td>
+                          <td className="px-3 py-3 text-right tabular-nums">{fmtNum(item.total_stock)}</td>
+                          <td className={`px-3 py-3 text-right tabular-nums font-semibold ${item.risk === 'danger' ? 'text-red-600' : item.risk === 'caution' ? 'text-amber-600' : 'text-green-600'}`}>
+                            {item.days_of_supply != null ? `${item.days_of_supply}일` : '-'}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums text-ppl-sub">{item.daily_avg != null ? item.daily_avg.toFixed(1) : '-'}</td>
+                          <td className="px-3 py-3 text-xs text-ppl-sub whitespace-nowrap">{item.launch_date || '-'}</td>
+                          <td className="px-3 py-3 text-right tabular-nums font-semibold">{fmtKrw(item.total_spend)}</td>
+                          <td className={`px-3 py-3 text-right tabular-nums font-semibold ${item.roas >= 2 ? 'text-green-600' : item.roas >= 1 ? 'text-amber-600' : 'text-red-500'}`}>
+                            {fmtRoas(item.roas)}
+                          </td>
+                          <td className="px-3 py-3 text-right text-ppl-sub">{item.ad_count}</td>
+                        </tr>
+                        {isOpen && (
+                          <tr className="border-b border-ppl-border">
+                            <td colSpan="11" className="px-6 py-4 bg-slate-50">
+                              <div className="space-y-4">
+
+                                {/* 컬러별 재고 */}
+                                {hasColors && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-ppl-sub mb-2">📦 컬러별 재고</p>
+                                    <div className="flex flex-wrap gap-2">
+                                      {item.colors.map((c, ci) => {
+                                        const colorDays = dailyAvg > 0 ? Math.round(c.wh / dailyAvg) : null;
+                                        const colorRisk = colorDays == null ? 'no_sales' : colorDays <= 7 ? 'danger' : colorDays <= 14 ? 'caution' : 'safe';
+                                        const crc = riskConfig[colorRisk] || riskConfig.none;
+                                        return (
+                                          <div key={ci} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs ${colorRisk === 'danger' ? 'bg-red-50 border-red-200' : colorRisk === 'caution' ? 'bg-amber-50 border-amber-200' : 'bg-white border-ppl-border'}`}>
+                                            <span className={`w-2 h-2 rounded-full shrink-0 ${crc.dot}`}></span>
+                                            <span className="font-semibold text-ppl-text">{c.color}</span>
+                                            <span className="text-ppl-sub">창고 <strong>{fmtNum(c.wh)}</strong></span>
+                                            <span className="text-ppl-sub">전체 <strong>{fmtNum(c.total)}</strong></span>
+                                            {colorDays != null && (
+                                              <span className={`font-bold ${colorRisk === 'danger' ? 'text-red-600' : colorRisk === 'caution' ? 'text-amber-600' : 'text-green-600'}`}>{colorDays}일</span>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                    <p className="text-[10px] text-ppl-sub mt-1.5">재고일수 = 창고재고 ÷ 품번 일평균 {dailyAvg.toFixed(1)}개/일</p>
+                                  </div>
+                                )}
+
+                                {/* 소재별 성과 */}
+                                {item.ads && item.ads.length > 0 && (() => {
+                                  const maxSpend = Math.max(...item.ads.map(a => a.spend));
+                                  const getTier = (a) => {
+                                    if (a.roas >= 2 && a.spend >= maxSpend * 0.3) return 'best';
+                                    if (a.roas >= 1) return 'good';
+                                    return 'low';
+                                  };
+                                  return (
+                                    <div>
+                                      <p className="text-xs font-semibold text-ppl-sub mb-2">🎯 소재별 성과 <span className="font-normal">(라이브 시작 ~ 전일 누적, 지출순)</span></p>
+                                      <div className="rounded-xl border border-ppl-border overflow-hidden bg-white">
+                                        <table className="w-full text-xs">
+                                          <thead className="bg-ppl-bg border-b border-ppl-border">
+                                            <tr>
+                                              <th className="text-left px-3 py-2 font-medium text-ppl-sub">소재명</th>
+                                              <th className="text-right px-3 py-2 font-medium text-ppl-sub">라이브시작</th>
+                                              <th className="text-right px-3 py-2 font-medium text-ppl-sub">지출</th>
+                                              <th className="text-right px-3 py-2 font-medium text-ppl-sub">ROAS</th>
+                                              <th className="text-right px-3 py-2 font-medium text-ppl-sub">전환</th>
+                                              <th className="text-right px-3 py-2 font-medium text-ppl-sub">CPC</th>
+                                              <th className="text-right px-3 py-2 font-medium text-ppl-sub">노출</th>
+                                              <th className="text-center px-3 py-2 font-medium text-ppl-sub">등급</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {item.ads.map((ad, ai) => {
+                                              const tier = getTier(ad);
+                                              const tierStyle = {
+                                                best: { label: 'BEST', bg: 'bg-emerald-100 text-emerald-700' },
+                                                good: { label: 'GOOD', bg: 'bg-blue-100 text-blue-700' },
+                                                low:  { label: 'LOW',  bg: 'bg-red-100 text-red-600' },
+                                              }[tier];
+                                              const roasColor = ad.roas >= 2 ? 'text-emerald-600 font-bold' : ad.roas >= 1 ? 'text-amber-600 font-semibold' : 'text-red-500 font-semibold';
+                                              return (
+                                                <tr key={ai} className="border-b border-ppl-border last:border-0 hover:bg-slate-50">
+                                                  <td className="px-3 py-2 max-w-[280px]">
+                                                    <span className="block truncate text-ppl-text" title={ad.ad_name}>{ad.ad_name}</span>
+                                                  </td>
+                                                  <td className="px-3 py-2 text-right text-ppl-sub whitespace-nowrap">{ad.launch_date}</td>
+                                                  <td className="px-3 py-2 text-right font-semibold text-ppl-text tabular-nums">{fmtKrw(ad.spend)}</td>
+                                                  <td className={`px-3 py-2 text-right tabular-nums ${roasColor}`}>{ad.spend > 0 ? ad.roas.toFixed(2) : '-'}</td>
+                                                  <td className="px-3 py-2 text-right tabular-nums text-ppl-sub">{ad.value > 0 ? (ad.value / (ad.spend > 0 ? ad.roas : 1)).toFixed(0) : '-'}</td>
+                                                  <td className="px-3 py-2 text-right tabular-nums text-ppl-sub">{ad.cpc > 0 ? fmtKrw(ad.cpc) : '-'}</td>
+                                                  <td className="px-3 py-2 text-right tabular-nums text-ppl-sub">{fmtNum(ad.impressions)}</td>
+                                                  <td className="px-3 py-2 text-center">
+                                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${tierStyle.bg}`}>{tierStyle.label}</span>
+                                                  </td>
+                                                </tr>
+                                              );
+                                            })}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
+
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         );
       };
@@ -6609,6 +6880,10 @@
               ) : activeView === 'banner-compose' ? (
                 <div className="px-8 py-8">
                   <BannerComposePanel />
+                </div>
+              ) : activeView === 'inventory' ? (
+                <div className="px-8 py-8">
+                  <InventoryPanel />
                 </div>
               ) : null}
             </div>

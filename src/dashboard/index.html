@@ -5879,6 +5879,7 @@
                                           <thead className="bg-ppl-bg border-b border-ppl-border">
                                             <tr>
                                               <th className="text-left px-3 py-2 font-medium text-ppl-sub">소재명</th>
+                                              <th className="text-center px-3 py-2 font-medium text-ppl-sub">상태</th>
                                               <th className="text-right px-3 py-2 font-medium text-ppl-sub">라이브시작</th>
                                               <th className="text-right px-3 py-2 font-medium text-ppl-sub">지출</th>
                                               <th className="text-right px-3 py-2 font-medium text-ppl-sub">ROAS</th>
@@ -5901,6 +5902,15 @@
                                                 <tr key={ai} className="border-b border-ppl-border last:border-0 hover:bg-slate-50">
                                                   <td className="px-3 py-2 max-w-[280px]">
                                                     <span className="block truncate text-ppl-text" title={ad.ad_name}>{ad.ad_name}</span>
+                                                  </td>
+                                                  <td className="px-3 py-2 text-center">
+                                                    {ad.status === 'ACTIVE' ? (
+                                                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-100 text-green-700">ON</span>
+                                                    ) : ad.status === 'PAUSED' ? (
+                                                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gray-100 text-gray-500">OFF</span>
+                                                    ) : (
+                                                      <span className="text-[10px] text-ppl-sub">-</span>
+                                                    )}
                                                   </td>
                                                   <td className="px-3 py-2 text-right text-ppl-sub whitespace-nowrap">{ad.launch_date}</td>
                                                   <td className="px-3 py-2 text-right font-semibold text-ppl-text tabular-nums">{fmtKrw(ad.spend)}</td>

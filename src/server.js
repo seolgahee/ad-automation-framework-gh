@@ -3114,6 +3114,21 @@ app.get('/api/inventory-dashboard', async (req, res) => {
     fetchStockInfo(pc, null, { saleStart: start, saleEnd: end }).catch(() => null)
   ));
 
+  // Meta 광고 ON/OFF 상태 — 60초 캐시
+  let adStatusMap = getCache('meta:ad-status') || new Map();
+  if (!getCache('meta:ad-status')) {
+    try {
+      const meta = getMetaClient();
+      if (meta._configured) {
+        const ads = await meta.getAds(['ACTIVE', 'PAUSED']);
+        adStatusMap = new Map(ads.map(a => [a.ad_id, a.status]));
+        setCache('meta:ad-status', adStatusMap, 60 * 1000);
+      }
+    } catch (err) {
+      logger.warn('Failed to fetch Meta ad statuses', { error: err.message });
+    }
+  }
+
   const riskOrder = { danger: 0, caution: 1, safe: 2, no_sales: 3, none: 4 };
   const items = partCds.map((pc, i) => {
     const p = partMap[pc];
@@ -3145,7 +3160,9 @@ app.get('/api/inventory-dashboard', async (req, res) => {
       days_of_supply: days ?? null,
       risk,
       colors: stock?.colors || [],
-      ads: p.ads.sort((a, b) => b.spend - a.spend),
+      ads: p.ads
+        .map(a => ({ ...a, status: adStatusMap.get(a.ad_id) || null }))
+        .sort((a, b) => b.spend - a.spend),
     };
   });
 

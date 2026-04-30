@@ -62,11 +62,17 @@ function destroyAsync(conn) {
  * 재고 조회
  * @param {string} partCd   - 품번 (예: "TWSK16063")
  * @param {string|null} colorCd - 컬러 코드 (없으면 컬러별 합산 반환)
+ * @param {object} [options]
+ * @param {string} [options.saleStart] - 판매 집계 시작일 (yyyy-mm-dd, 포함). 없으면 최근 7일.
+ * @param {string} [options.saleEnd]   - 판매 집계 종료일 (yyyy-mm-dd, 포함). 없으면 어제.
  * @returns {object|null}
  *   colorCd 있을 때: { prdt_nm, is_mc, sizes: [{size, wh, total}], sale_7d, daily_avg, days_of_supply }
  *   colorCd 없을 때: { prdt_nm, is_mc, colors: [{color, wh, total}], sale_7d, daily_avg, days_of_supply }
+ *   재고는 항상 최신(MAX(START_DT)) 기준. 판매·일평균은 옵션 기간 또는 최근 7일 기준.
  */
-export async function fetchStockInfo(partCd, colorCd = null) {
+export async function fetchStockInfo(partCd, colorCd = null, options = {}) {
+  const { saleStart, saleEnd } = options;
+  const useRange = !!(saleStart && saleEnd);
   const conn = createConnection();
 
   try {
@@ -106,11 +112,12 @@ export async function fetchStockInfo(partCd, colorCd = null) {
       `, [BRAND_CD, partCd, BRAND_CD, partCd]);
     }
 
-    // 최근 7일 자사몰 판매량 — SHOP_ID=30004 ((주)에프앤에프)
+    // 자사몰 판매량 — 기간 옵션 있으면 해당 기간, 없으면 최근 7일
     const colorFilter = colorCd ? 'AND COLOR_CD = ?' : '';
-    const saleParams  = colorCd
-      ? [BRAND_CD, SHOP_ID, partCd, colorCd]
-      : [BRAND_CD, SHOP_ID, partCd];
+    const dateClause  = useRange ? 'AND DT >= ? AND DT <= ?' : 'AND DT >= CURRENT_DATE - 7 AND DT <  CURRENT_DATE';
+    const saleParams  = [BRAND_CD, SHOP_ID, partCd];
+    if (colorCd) saleParams.push(colorCd);
+    if (useRange) saleParams.push(saleStart, saleEnd);
 
     const saleRows = await executeAsync(conn, `
       SELECT SUM(SALE_NML_QTY - SALE_RET_QTY) AS SALE_QTY
@@ -119,12 +126,14 @@ export async function fetchStockInfo(partCd, colorCd = null) {
         AND SHOP_ID = ?
         AND PART_CD = ?
         ${colorFilter}
-        AND DT >= CURRENT_DATE - 7
-        AND DT <  CURRENT_DATE
+        ${dateClause}
     `, saleParams);
 
+    const periodDays = useRange
+      ? Math.max(1, Math.round((Date.parse(saleEnd) - Date.parse(saleStart)) / 86400000) + 1)
+      : 7;
     const sale7d   = parseInt(saleRows?.[0]?.SALE_QTY || 0, 10);
-    const dailyAvg = Math.round((sale7d / 7) * 10) / 10;
+    const dailyAvg = Math.round((sale7d / periodDays) * 10) / 10;
 
     if (!stockRows || stockRows.length === 0) return null;
 

@@ -2644,6 +2644,24 @@ app.post('/api/collect', async (req, res) => {
   }
 });
 
+/** POST /api/ad-performance/backfill?since=YYYY-MM-DD&until=YYYY-MM-DD
+ *  Meta ad-level 데이터를 일자별로 백필. UPSERT라 기존 데이터는 갱신만. */
+app.post('/api/ad-performance/backfill', async (req, res) => {
+  const since = req.query.since || req.body?.since;
+  const until = req.query.until || req.body?.until;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(since) || !/^\d{4}-\d{2}-\d{2}$/.test(until)) {
+    return res.status(400).json({ error: 'since and until required (YYYY-MM-DD)' });
+  }
+  try {
+    logger.info(`Ad-performance backfill started: ${since} ~ ${until}`);
+    const summary = await collector.backfillMetaAdLevel(since, until);
+    res.json({ success: true, since, until, ...summary });
+  } catch (err) {
+    logger.error('Backfill failed', { error: err.message });
+    res.status(500).json({ error: 'Backfill failed', details: err.message });
+  }
+});
+
 // ─── Slack 수동 발송 ──────────────────────────────────────────
 app.post('/api/alerts/send-now', async (req, res) => {
   try {
@@ -3021,10 +3039,18 @@ app.post('/api/generate-video', videoUpload.array('images', 20), async (req, res
 const INVENTORY_PART_CD_RE = /(?:^|_)([A-Z]{4}[A-Z0-9]{4,6})(?:_|$)/;
 const INVENTORY_LAUNCH_DATE_RE = /^(\d{2})(\d{2})(\d{2})_/;
 
-/** GET /api/inventory-dashboard — 품번별 재고 현황 + Meta 누적 지출 통합 */
+/** GET /api/inventory-dashboard — 품번별 재고 현황 + Meta 기간 지출 통합 */
+const INVENTORY_MIN_DATE = '2026-03-01';
+const isYmd = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
 app.get('/api/inventory-dashboard', async (req, res) => {
   try {
   const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+
+  let start = isYmd(req.query.start) ? req.query.start : INVENTORY_MIN_DATE;
+  let end   = isYmd(req.query.end)   ? req.query.end   : yesterday;
+  if (start < INVENTORY_MIN_DATE) start = INVENTORY_MIN_DATE;
+  if (end   > yesterday)          end   = yesterday;
+  if (start > end)                start = end;
 
   const adRows = db.prepare(`
     SELECT
@@ -3037,10 +3063,11 @@ app.get('/api/inventory-dashboard', async (req, res) => {
       SUM(clicks)           AS total_clicks
     FROM ad_performance
     WHERE platform = 'meta'
+      AND date_start >= ?
       AND date_start <= ?
     GROUP BY ad_id
     HAVING total_spend > 0
-  `).all(yesterday);
+  `).all(start, end);
 
   const partMap = {};
   for (const row of adRows) {
@@ -3078,11 +3105,14 @@ app.get('/api/inventory-dashboard', async (req, res) => {
   }
 
   const partCds = Object.keys(partMap);
+  const range = { start, end, min: INVENTORY_MIN_DATE, max: yesterday };
   if (partCds.length === 0) {
-    return res.json({ items: [], summary: { total_spend: 0, part_count: 0, danger_count: 0, caution_count: 0, safe_count: 0 } });
+    return res.json({ items: [], summary: { total_spend: 0, part_count: 0, danger_count: 0, caution_count: 0, safe_count: 0 }, range });
   }
 
-  const stockResults = await Promise.all(partCds.map(pc => fetchStockInfo(pc).catch(() => null)));
+  const stockResults = await Promise.all(partCds.map(pc =>
+    fetchStockInfo(pc, null, { saleStart: start, saleEnd: end }).catch(() => null)
+  ));
 
   const riskOrder = { danger: 0, caution: 1, safe: 2, no_sales: 3, none: 4 };
   const items = partCds.map((pc, i) => {
@@ -3129,7 +3159,7 @@ app.get('/api/inventory-dashboard', async (req, res) => {
     safe_count: items.filter(i => i.risk === 'safe').length,
   };
 
-  res.json({ items, summary });
+  res.json({ items, summary, range });
   } catch (err) {
     logger.error('inventory-dashboard error', { error: err.message });
     res.status(500).json({ error: err.message });

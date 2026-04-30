@@ -42,10 +42,65 @@ export class DataCollector extends EventEmitter {
     };
   }
 
-  /** Initialize DB only — 자동 수집 없음, 수동 트리거(/api/collect)로만 실행 */
+  /** Initialize DB only — 자동 수집 없음, 수동 트리거(/api/collect)로만 실행
+   *  단, 시작 시 최근 14일 누락분은 자동 백필하고, 매일 02:00에 어제 데이터를 재수집한다.
+   */
   start() {
     initDatabase();
     logger.info('Data collector initialized (manual trigger mode — no auto schedule)');
+
+    this._autoHealOnStartup().catch(e =>
+      logger.warn('Auto-heal on startup failed', { error: e.message })
+    );
+
+    cron.schedule('0 2 * * *', () => {
+      const y = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+      logger.info(`Daily backfill cron — ${y}`);
+      this.backfillMetaAdLevel(y, y).catch(e =>
+        logger.warn(`Daily backfill failed for ${y}`, { error: e.message })
+      );
+    });
+    logger.info('Daily ad-performance backfill cron scheduled (02:00 daily, target=yesterday)');
+  }
+
+  /** 서버 시작 직후 최근 14일 중 누락된 날짜만 자동 백필 (UPSERT라 안전) */
+  async _autoHealOnStartup() {
+    if (!this.meta || this.meta._configured === false) {
+      logger.info('Auto-heal skipped: meta client not configured');
+      return;
+    }
+
+    const dayMs = 86400000;
+    const yesterday = new Date(Date.now() - dayMs).toISOString().split('T')[0];
+    const fourteenAgo = new Date(Date.now() - 14 * dayMs).toISOString().split('T')[0];
+
+    const present = new Set(
+      db.prepare(
+        `SELECT DISTINCT date_start FROM ad_performance
+         WHERE platform = 'meta' AND date_start >= ? AND date_start <= ?`
+      ).all(fourteenAgo, yesterday).map(r => r.date_start)
+    );
+
+    const missing = [];
+    for (let t = Date.parse(fourteenAgo); t <= Date.parse(yesterday); t += dayMs) {
+      const ymd = new Date(t).toISOString().split('T')[0];
+      if (!present.has(ymd)) missing.push(ymd);
+    }
+
+    if (missing.length === 0) {
+      logger.info('Auto-heal: no missing days in last 14');
+      return;
+    }
+
+    logger.info(`Auto-heal: backfilling ${missing.length} missing day(s): ${missing.join(', ')}`);
+    for (const ymd of missing) {
+      try {
+        await this.backfillMetaAdLevel(ymd, ymd);
+      } catch (err) {
+        logger.warn(`Auto-heal failed for ${ymd}`, { error: err.message });
+      }
+    }
+    logger.info('Auto-heal complete');
   }
 
   /** Collect from all platforms (sequential to avoid SQLite write conflicts) */
@@ -197,6 +252,55 @@ export class DataCollector extends EventEmitter {
         logger.warn('Creative image caching failed', { error: err.message })
       );
     }
+  }
+
+  /**
+   * Meta ad-level 일자별 백필 — since~until 사이 매일 1회씩 Meta API 호출 후 upsert.
+   * 누락된 날짜만 채우고 기존 row는 ON CONFLICT로 갱신.
+   */
+  async backfillMetaAdLevel(since, until) {
+    const start = new Date(`${since}T00:00:00Z`);
+    const end   = new Date(`${until}T00:00:00Z`);
+    if (isNaN(start) || isNaN(end) || start > end) {
+      throw new Error(`Invalid range: ${since} ~ ${until}`);
+    }
+
+    const upsert = db.prepare(`
+      INSERT INTO ad_performance
+        (ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name, platform, date_start,
+         impressions, clicks, spend, conversions, conversion_value, ctr, cpc, cpm, roas, cpa)
+      VALUES (?, ?, ?, ?, ?, ?, 'meta', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(ad_id, platform, date_start) DO UPDATE SET
+        impressions=excluded.impressions, clicks=excluded.clicks, spend=excluded.spend,
+        conversions=excluded.conversions, conversion_value=excluded.conversion_value,
+        ctr=excluded.ctr, cpc=excluded.cpc, cpm=excluded.cpm, roas=excluded.roas, cpa=excluded.cpa,
+        collected_at=datetime('now')
+    `);
+
+    const summary = { days: 0, rows: 0, errors: [] };
+    for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+      const ymd = d.toISOString().split('T')[0];
+      try {
+        const rows = await this.meta.getAdInsights({ timeRange: { since: ymd, until: ymd } });
+        await runTx(() => {
+          for (const r of rows) {
+            upsert.run(
+              r.adId, r.adName, r.adsetId, r.adsetName,
+              `meta_${r.campaignId}`, r.campaignName, ymd,
+              r.impressions, r.clicks, r.spend, r.conversions, r.conversionValue,
+              r.ctr, r.cpc, r.cpm, r.roas, r.cpa
+            );
+          }
+        });
+        summary.days += 1;
+        summary.rows += rows.length;
+        logger.info(`Backfill ${ymd}: ${rows.length} rows`);
+      } catch (err) {
+        logger.warn(`Backfill ${ymd} failed: ${err.message}`);
+        summary.errors.push({ date: ymd, error: err.message });
+      }
+    }
+    return summary;
   }
 
   /**

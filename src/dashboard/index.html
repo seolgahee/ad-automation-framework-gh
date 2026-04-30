@@ -5753,13 +5753,13 @@
               )}
             </div>
 
-            {/* 요약 카드 */}
+            {/* 요약 카드 — 컬러 단위 */}
             <div className="grid grid-cols-4 gap-4">
               {[
                 { label: 'Meta 총 지출', value: fmtKrw(summary.total_spend), color: 'text-ppl-text' },
-                { label: '🔴 위험 품번', value: `${summary.danger_count}개`, color: 'text-red-600' },
-                { label: '🟡 주의 품번', value: `${summary.caution_count}개`, color: 'text-amber-600' },
-                { label: '🟢 안전 품번', value: `${summary.safe_count}개`, color: 'text-green-600' },
+                { label: '🔴 위험 컬러', value: `${summary.danger_color_count ?? 0}개`, color: 'text-red-600' },
+                { label: '🟡 주의 컬러', value: `${summary.caution_color_count ?? 0}개`, color: 'text-amber-600' },
+                { label: '🟢 안전 컬러', value: `${summary.safe_color_count ?? 0}개`, color: 'text-green-600' },
               ].map((c, i) => (
                 <div key={i} className="bg-white border border-ppl-border rounded-xl p-4">
                   <p className="text-xs text-ppl-sub mb-1">{c.label}</p>
@@ -5783,14 +5783,14 @@
               <table className="w-full text-sm">
                 <thead className="bg-ppl-bg border-b border-ppl-border">
                   <tr>
-                    {['위험도', '품번', '상품명', '창고재고', '전체재고', '재고일수', '일평균판매', '라이브시작', 'Meta 기간지출', 'ROAS', '소재수'].map(h => (
+                    {['위험도', '컬러', '품번', '상품명', '창고재고', '전체재고', '재고일수', '일평균판매', '라이브시작', 'Meta 기간지출', 'ROAS', '소재수'].map(h => (
                       <th key={h} className="text-left px-3 py-2.5 text-xs font-medium text-ppl-sub whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {sortedItems.length === 0 ? (
-                    <tr><td colSpan="11" className="text-center py-12 text-ppl-sub">데이터가 없습니다. Meta 광고 성과 수집 후 확인하세요.</td></tr>
+                    <tr><td colSpan="12" className="text-center py-12 text-ppl-sub">데이터가 없습니다. Meta 광고 성과 수집 후 확인하세요.</td></tr>
                   ) : sortedItems.map((item, i) => {
                     const rc = riskConfig[item.risk] || riskConfig.none;
                     const isOpen = !!expanded[item.part_cd];
@@ -5798,6 +5798,16 @@
                     const hasAds = item.ads && item.ads.length > 0;
                     const canExpand = hasColors || hasAds;
                     const dailyAvg = item.daily_avg || 0;
+
+                    // 컬러별 최악 위험도 — 품번 일평균을 기준으로 c.wh / dailyAvg
+                    let colorWorstRisk = null;
+                    if (dailyAvg > 0 && hasColors) {
+                      for (const c of item.colors) {
+                        const days = Math.round((c.wh || 0) / dailyAvg);
+                        if (days <= 7) { colorWorstRisk = 'danger'; break; }
+                        if (days <= 14 && colorWorstRisk !== 'danger') colorWorstRisk = 'caution';
+                      }
+                    }
                     return (
                       <React.Fragment key={i}>
                         <tr
@@ -5809,6 +5819,21 @@
                               <span className={`w-1.5 h-1.5 rounded-full ${rc.dot}`}></span>
                               {rc.label}
                             </span>
+                          </td>
+                          <td className="px-3 py-3">
+                            {colorWorstRisk === 'danger' ? (
+                              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700 border border-red-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+                                컬러 위험
+                              </span>
+                            ) : colorWorstRisk === 'caution' ? (
+                              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700 border border-amber-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                                컬러 주의
+                              </span>
+                            ) : (
+                              <span className="text-ppl-sub text-xs">-</span>
+                            )}
                           </td>
                           <td className="px-3 py-3">
                             <div className="flex items-center gap-1.5">
@@ -5834,7 +5859,7 @@
                         </tr>
                         {isOpen && (
                           <tr className="border-b border-ppl-border">
-                            <td colSpan="11" className="px-6 py-4 bg-slate-50">
+                            <td colSpan="12" className="px-6 py-4 bg-slate-50">
                               <div className="space-y-4">
 
                                 {/* 컬러별 재고 */}

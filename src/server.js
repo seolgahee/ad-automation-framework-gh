@@ -3168,12 +3168,32 @@ app.get('/api/inventory-dashboard', async (req, res) => {
 
   items.sort((a, b) => (riskOrder[a.risk] ?? 9) - (riskOrder[b.risk] ?? 9));
 
+  // 컬러 단위 위험도 카운트 — 품번 일평균을 기준으로 c.wh / dailyAvg
+  let dangerColors = 0, cautionColors = 0, safeColors = 0, noSalesColors = 0;
+  for (const it of items) {
+    if (!it.colors || it.colors.length === 0) continue;
+    const da = it.daily_avg || 0;
+    for (const c of it.colors) {
+      if (da <= 0) { noSalesColors += 1; continue; }
+      const days = Math.round((c.wh || 0) / da);
+      if (days <= 7)       dangerColors  += 1;
+      else if (days <= 14) cautionColors += 1;
+      else                 safeColors    += 1;
+    }
+  }
+
   const summary = {
     total_spend: items.reduce((s, i) => s + i.total_spend, 0),
     part_count: items.length,
+    // 품번 단위 (기존 호환)
     danger_count: items.filter(i => i.risk === 'danger').length,
     caution_count: items.filter(i => i.risk === 'caution').length,
     safe_count: items.filter(i => i.risk === 'safe').length,
+    // 컬러 단위 (신규)
+    danger_color_count: dangerColors,
+    caution_color_count: cautionColors,
+    safe_color_count: safeColors,
+    no_sales_color_count: noSalesColors,
   };
 
   res.json({ items, summary, range });

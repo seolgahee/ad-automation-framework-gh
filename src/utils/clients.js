@@ -40,7 +40,7 @@ export function getNaverClient() {
 }
 
 /** Snowflake 재고 조회 */
-export const { fetchStockInfo, debugSaleShops } = snowflakeClient;
+export const { fetchStockInfo, fetchStockInfoBatch, debugSaleShops } = snowflakeClient;
 
 /** Reset clients (useful for testing or credential rotation) */
 export function resetClients() {

@@ -2,7 +2,7 @@
  * Snowflake Inventory Client
  *
  * 재고 데이터 조회 모듈 (Discovery 브랜드 기준)
- * Tables: DW_SCS_DACUM (재고), DB_PRDT (상품명), DW_SH_SCS_D (판매)
+ * Tables: DW_SCS_DACUM (재고), DB_PRDT (상품명/최초출고일), DW_SH_SCS_D (판매)
  * 인증: RSA 키페어 (SNOWFLAKE_JWT) — 서비스 계정 SVC_ORG_PF
  */
 import snowflake from 'snowflake-sdk';
@@ -90,7 +90,8 @@ export async function fetchStockInfo(partCd, colorCd = null, options = {}) {
         SELECT d.SIZE_CD,
                SUM(d.WH_STOCK_QTY) AS WH_STOCK,
                SUM(d.STOCK_QTY)    AS TOTAL_STOCK,
-               MAX(p.PRDT_NM)      AS PRDT_NM
+               MAX(p.PRDT_NM)      AS PRDT_NM,
+               MIN(p.DELV_DT_1ST)  AS DELV_DT_1ST
         FROM ${DATABASE}.${SCHEMA}.DW_SCS_DACUM d
         LEFT JOIN ${DATABASE}.${SCHEMA}.DB_PRDT p ON d.PRDT_CD = p.PRDT_CD
         WHERE d.BRD_CD = ? AND d.PART_CD = ? AND d.COLOR_CD = ?
@@ -102,7 +103,8 @@ export async function fetchStockInfo(partCd, colorCd = null, options = {}) {
         SELECT d.COLOR_CD,
                SUM(d.WH_STOCK_QTY) AS WH_STOCK,
                SUM(d.STOCK_QTY)    AS TOTAL_STOCK,
-               MAX(p.PRDT_NM)      AS PRDT_NM
+               MAX(p.PRDT_NM)      AS PRDT_NM,
+               MIN(p.DELV_DT_1ST)  AS DELV_DT_1ST
         FROM ${DATABASE}.${SCHEMA}.DW_SCS_DACUM d
         LEFT JOIN ${DATABASE}.${SCHEMA}.DB_PRDT p ON d.PRDT_CD = p.PRDT_CD
         WHERE d.BRD_CD = ? AND d.PART_CD = ?
@@ -139,6 +141,7 @@ export async function fetchStockInfo(partCd, colorCd = null, options = {}) {
 
     const prdtNm = stockRows.find(r => r.PRDT_NM)?.PRDT_NM || '';
     const isMc   = prdtNm.toUpperCase().split(' ').includes('MC');
+    const delvDt1st = stockRows.find(r => r.DELV_DT_1ST)?.DELV_DT_1ST || null;
 
     let totalWh;
     let result;
@@ -157,11 +160,110 @@ export async function fetchStockInfo(partCd, colorCd = null, options = {}) {
 
     const daysOfSupply = dailyAvg > 0 ? Math.round(totalWh / dailyAvg) : null;
 
-    return { prdt_nm: prdtNm, is_mc: isMc, sale_7d: sale7d, daily_avg: dailyAvg, days_of_supply: daysOfSupply, ...result };
+    return { prdt_nm: prdtNm, is_mc: isMc, delv_dt_1st: delvDt1st, sale_7d: sale7d, daily_avg: dailyAvg, days_of_supply: daysOfSupply, ...result };
 
   } catch (err) {
     logger.warn(`재고 조회 실패 (${partCd}-${colorCd}): ${err.message}`);
     return null;
+  } finally {
+    await destroyAsync(conn);
+  }
+}
+
+/**
+ * 재고 일괄 조회 — 품번 여러 개를 단일 연결 + 2개 쿼리로 처리
+ * @param {string[]} partCds - 품번 배열
+ * @param {object} [options]
+ * @param {string} [options.saleStart] - 판매 집계 시작일 (yyyy-mm-dd)
+ * @param {string} [options.saleEnd]   - 판매 집계 종료일 (yyyy-mm-dd)
+ * @returns {Promise<Map<string, object>>} part_cd → fetchStockInfo no-color 형태 결과
+ *   재고가 없는 품번은 Map에 포함되지 않음.
+ */
+export async function fetchStockInfoBatch(partCds, options = {}) {
+  if (!Array.isArray(partCds) || partCds.length === 0) return new Map();
+  const { saleStart, saleEnd } = options;
+  const useRange = !!(saleStart && saleEnd);
+  const placeholders = partCds.map(() => '?').join(',');
+  const conn = createConnection();
+
+  try {
+    await connectAsync(conn);
+
+    // 재고 — 품번별 최신 스냅샷 × 컬러별 합산 (한 번에)
+    const stockRows = await executeAsync(conn, `
+      WITH latest AS (
+        SELECT PART_CD, MAX(START_DT) AS MAX_DT
+        FROM ${DATABASE}.${SCHEMA}.DW_SCS_DACUM
+        WHERE BRD_CD = ? AND PART_CD IN (${placeholders})
+        GROUP BY PART_CD
+      )
+      SELECT d.PART_CD, d.COLOR_CD,
+             SUM(d.WH_STOCK_QTY) AS WH_STOCK,
+             SUM(d.STOCK_QTY)    AS TOTAL_STOCK,
+             MAX(p.PRDT_NM)      AS PRDT_NM,
+             MIN(p.DELV_DT_1ST)  AS DELV_DT_1ST
+      FROM ${DATABASE}.${SCHEMA}.DW_SCS_DACUM d
+      JOIN latest l ON d.PART_CD = l.PART_CD AND d.START_DT = l.MAX_DT
+      LEFT JOIN ${DATABASE}.${SCHEMA}.DB_PRDT p ON d.PRDT_CD = p.PRDT_CD
+      WHERE d.BRD_CD = ? AND d.PART_CD IN (${placeholders})
+      GROUP BY d.PART_CD, d.COLOR_CD
+      ORDER BY d.PART_CD, WH_STOCK DESC
+    `, [BRAND_CD, ...partCds, BRAND_CD, ...partCds]);
+
+    // 자사몰 판매 — 품번별 합산
+    const dateClause = useRange ? 'AND DT >= ? AND DT <= ?' : 'AND DT >= CURRENT_DATE - 7 AND DT < CURRENT_DATE';
+    const saleBinds  = [BRAND_CD, SHOP_ID, ...partCds];
+    if (useRange) saleBinds.push(saleStart, saleEnd);
+
+    const saleRows = await executeAsync(conn, `
+      SELECT PART_CD, SUM(SALE_NML_QTY - SALE_RET_QTY) AS SALE_QTY
+      FROM ${DATABASE}.${SCHEMA}.DW_SH_SCS_D
+      WHERE BRD_CD = ?
+        AND SHOP_ID = ?
+        AND PART_CD IN (${placeholders})
+        ${dateClause}
+      GROUP BY PART_CD
+    `, saleBinds);
+
+    const periodDays = useRange
+      ? Math.max(1, Math.round((Date.parse(saleEnd) - Date.parse(saleStart)) / 86400000) + 1)
+      : 7;
+    const saleMap = new Map(saleRows.map(r => [r.PART_CD, parseInt(r.SALE_QTY || 0, 10)]));
+
+    const grouped = new Map();
+    for (const row of stockRows) {
+      let g = grouped.get(row.PART_CD);
+      if (!g) { g = { prdt_nm: '', delv_dt_1st: null, colors: [] }; grouped.set(row.PART_CD, g); }
+      if (row.PRDT_NM && !g.prdt_nm) g.prdt_nm = row.PRDT_NM;
+      if (row.DELV_DT_1ST && !g.delv_dt_1st) g.delv_dt_1st = row.DELV_DT_1ST;
+      g.colors.push({
+        color: row.COLOR_CD,
+        wh:    parseInt(row.WH_STOCK || 0, 10),
+        total: parseInt(row.TOTAL_STOCK || 0, 10),
+      });
+    }
+
+    const result = new Map();
+    for (const [partCd, g] of grouped) {
+      const sale     = saleMap.get(partCd) || 0;
+      const dailyAvg = Math.round((sale / periodDays) * 10) / 10;
+      const totalWh  = g.colors.reduce((s, c) => s + c.wh, 0);
+      const dos      = dailyAvg > 0 ? Math.round(totalWh / dailyAvg) : null;
+      const isMc     = (g.prdt_nm || '').toUpperCase().split(' ').includes('MC');
+      result.set(partCd, {
+        prdt_nm:        g.prdt_nm,
+        is_mc:          isMc,
+        delv_dt_1st:    g.delv_dt_1st,
+        sale_7d:        sale,
+        daily_avg:      dailyAvg,
+        days_of_supply: dos,
+        colors:         g.colors,
+      });
+    }
+    return result;
+  } catch (err) {
+    logger.warn(`fetchStockInfoBatch 실패 (${partCds.length}개 품번): ${err.message}`);
+    return new Map();
   } finally {
     await destroyAsync(conn);
   }
@@ -190,4 +292,4 @@ export async function debugSaleShops(partCd) {
   }
 }
 
-export default { fetchStockInfo, debugSaleShops };
+export default { fetchStockInfo, fetchStockInfoBatch, debugSaleShops };

@@ -15,7 +15,7 @@ import db, { initDatabase } from './utils/db.js';
 import logger from './utils/logger.js';
 import DataCollector from './analytics/collector.js';
 import { getOptimizer, getPipeline, getTemplateEngine, getABTestEngine, getAudienceManager } from './utils/services.js';
-import { getMetaClient, getGoogleClient, getNaverClient, fetchStockInfo, debugSaleShops } from './utils/clients.js';
+import { getMetaClient, getGoogleClient, getNaverClient, fetchStockInfo, fetchStockInfoBatch, debugSaleShops } from './utils/clients.js';
 import crypto from 'crypto';
 import path from 'path';
 import { getAdapter } from './utils/platform-adapter.js';
@@ -1691,10 +1691,33 @@ app.get('/api/meta/creative-thumbnail/:adId', async (req, res) => {
   }
 
   // 3) Meta CDN 프록시 (stp 파라미터 제거 → 원본 품질)
-  const urlRow = db.prepare(
-    `SELECT image_url FROM ad_performance WHERE ad_id = ? AND image_url IS NOT NULL LIMIT 1`
+  //   3a) 본인 ad_id의 image_url
+  //   3b) 같은 ad_name을 가진 다른 ad_id의 image_url (Meta가 동일 크리에이티브를 여러 adset에 복제 → ad_id만 다르고 이미지 동일)
+  let urlRow = db.prepare(
+    `SELECT image_url FROM ad_performance WHERE ad_id = ? AND image_url IS NOT NULL AND image_url != '' LIMIT 1`
   ).get(adId);
+  let backfillNeeded = false;
+  if (!urlRow?.image_url) {
+    urlRow = db.prepare(`
+      SELECT ap2.image_url
+      FROM ad_performance ap1
+      JOIN ad_performance ap2 ON ap2.ad_name = ap1.ad_name AND ap2.ad_id != ap1.ad_id
+      WHERE ap1.ad_id = ?
+        AND ap2.image_url IS NOT NULL AND ap2.image_url != ''
+      LIMIT 1
+    `).get(adId);
+    if (urlRow?.image_url) backfillNeeded = true;
+  }
   if (!urlRow?.image_url) return res.status(404).end();
+
+  // 자동 백필 — 다음부터는 JOIN 없이 직접 조회
+  if (backfillNeeded) {
+    try {
+      db.prepare(
+        `UPDATE ad_performance SET image_url = ? WHERE ad_id = ? AND (image_url IS NULL OR image_url = '')`
+      ).run(urlRow.image_url, adId);
+    } catch (_) {}
+  }
 
   try {
     // stp 파라미터(썸네일 변환) 제거
@@ -3052,6 +3075,10 @@ app.get('/api/inventory-dashboard', async (req, res) => {
   if (end   > yesterday)          end   = yesterday;
   if (start > end)                start = end;
 
+  const cacheKey = `inv:${start}:${end}`;
+  const cached = getCache(cacheKey);
+  if (cached) return res.json(cached);
+
   const adRows = db.prepare(`
     SELECT
       ad_id,
@@ -3110,9 +3137,7 @@ app.get('/api/inventory-dashboard', async (req, res) => {
     return res.json({ items: [], summary: { total_spend: 0, part_count: 0, danger_count: 0, caution_count: 0, safe_count: 0 }, range });
   }
 
-  const stockResults = await Promise.all(partCds.map(pc =>
-    fetchStockInfo(pc, null, { saleStart: start, saleEnd: end }).catch(() => null)
-  ));
+  const stockMap = await fetchStockInfoBatch(partCds, { saleStart: start, saleEnd: end });
 
   // Meta 광고 ON/OFF 상태 — 60초 캐시
   let adStatusMap = getCache('meta:ad-status') || new Map();
@@ -3130,9 +3155,9 @@ app.get('/api/inventory-dashboard', async (req, res) => {
   }
 
   const riskOrder = { danger: 0, caution: 1, safe: 2, no_sales: 3, none: 4 };
-  const items = partCds.map((pc, i) => {
+  const items = partCds.map((pc) => {
     const p = partMap[pc];
-    const stock = stockResults[i];
+    const stock = stockMap.get(pc) || null;
     const days = stock?.days_of_supply;
     let risk = 'none';
     if (days == null) risk = 'no_sales';
@@ -3146,6 +3171,7 @@ app.get('/api/inventory-dashboard', async (req, res) => {
     return {
       part_cd: pc,
       prdt_nm: stock?.prdt_nm || null,
+      delv_dt_1st: stock?.delv_dt_1st ? new Date(stock.delv_dt_1st).toISOString().split('T')[0] : null,
       launch_date: p.launch_date,
       total_spend: p.total_spend,
       total_value: p.total_value,
@@ -3196,7 +3222,9 @@ app.get('/api/inventory-dashboard', async (req, res) => {
     no_sales_color_count: noSalesColors,
   };
 
-  res.json({ items, summary, range });
+  const response = { items, summary, range };
+  setCache(cacheKey, response, 60 * 1000);
+  res.json(response);
   } catch (err) {
     logger.error('inventory-dashboard error', { error: err.message });
     res.status(500).json({ error: err.message });

@@ -5669,6 +5669,29 @@
       };
 
       // ─── Inventory Panel ────────────────────────────────────
+      const ThumbPreview = ({ adId, x, y }) => {
+        const [failed, setFailed] = React.useState(false);
+        return (
+          <div
+            className="fixed z-50 bg-white border border-ppl-border rounded-lg shadow-xl p-2 pointer-events-none"
+            style={{ left: x, top: y }}
+          >
+            {failed ? (
+              <div className="w-48 h-48 flex items-center justify-center text-xs text-ppl-sub bg-gray-50 rounded">
+                이미지 없음
+              </div>
+            ) : (
+              <img
+                src={`${API}/meta/creative-thumbnail/${adId}`}
+                alt=""
+                className="w-48 h-48 object-contain rounded bg-gray-50"
+                onError={() => setFailed(true)}
+              />
+            )}
+          </div>
+        );
+      };
+
       const InventoryPanel = () => {
         const INVENTORY_MIN_DATE = '2026-03-01';
         const yesterdayStr = new Date(Date.now() - 86400000).toISOString().split('T')[0];
@@ -5679,6 +5702,7 @@
         const [expanded, setExpanded] = React.useState({});
         const [startDate, setStartDate] = React.useState(INVENTORY_MIN_DATE);
         const [endDate, setEndDate]     = React.useState(yesterdayStr);
+        const [hoveredAd, setHoveredAd] = React.useState(null); // { adId, x, y }
 
         React.useEffect(() => {
           setLoading(true);
@@ -5783,14 +5807,14 @@
               <table className="w-full text-sm">
                 <thead className="bg-ppl-bg border-b border-ppl-border">
                   <tr>
-                    {['위험도', '컬러', '품번', '상품명', '창고재고', '전체재고', '재고일수', '일평균판매', '라이브시작', 'Meta 기간지출', 'ROAS', '소재수'].map(h => (
+                    {['위험도', '컬러', '품번', '상품명', '창고재고', '전체재고', '재고일수', '일평균판매', '출고일자', '라이브시작', 'Meta 기간지출', 'ROAS', '소재수'].map(h => (
                       <th key={h} className="text-left px-3 py-2.5 text-xs font-medium text-ppl-sub whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {sortedItems.length === 0 ? (
-                    <tr><td colSpan="12" className="text-center py-12 text-ppl-sub">데이터가 없습니다. Meta 광고 성과 수집 후 확인하세요.</td></tr>
+                    <tr><td colSpan="13" className="text-center py-12 text-ppl-sub">데이터가 없습니다. Meta 광고 성과 수집 후 확인하세요.</td></tr>
                   ) : sortedItems.map((item, i) => {
                     const rc = riskConfig[item.risk] || riskConfig.none;
                     const isOpen = !!expanded[item.part_cd];
@@ -5850,6 +5874,7 @@
                             {item.days_of_supply != null ? `${item.days_of_supply}일` : '-'}
                           </td>
                           <td className="px-3 py-3 text-right tabular-nums text-ppl-sub">{item.daily_avg != null ? item.daily_avg.toFixed(1) : '-'}</td>
+                          <td className="px-3 py-3 text-xs text-ppl-sub whitespace-nowrap">{item.delv_dt_1st || '-'}</td>
                           <td className="px-3 py-3 text-xs text-ppl-sub whitespace-nowrap">{item.launch_date || '-'}</td>
                           <td className="px-3 py-3 text-right tabular-nums font-semibold">{fmtKrw(item.total_spend)}</td>
                           <td className={`px-3 py-3 text-right tabular-nums font-semibold ${item.roas >= 2 ? 'text-green-600' : item.roas >= 1 ? 'text-amber-600' : 'text-red-500'}`}>
@@ -5859,7 +5884,7 @@
                         </tr>
                         {isOpen && (
                           <tr className="border-b border-ppl-border">
-                            <td colSpan="12" className="px-6 py-4 bg-slate-50">
+                            <td colSpan="13" className="px-6 py-4 bg-slate-50">
                               <div className="space-y-4">
 
                                 {/* 컬러별 재고 */}
@@ -5926,7 +5951,20 @@
                                               return (
                                                 <tr key={ai} className="border-b border-ppl-border last:border-0 hover:bg-slate-50">
                                                   <td className="px-3 py-2 max-w-[280px]">
-                                                    <span className="block truncate text-ppl-text" title={ad.ad_name}>{ad.ad_name}</span>
+                                                    <span
+                                                      className="block truncate text-ppl-text cursor-help"
+                                                      title={ad.ad_name}
+                                                      onMouseEnter={(e) => {
+                                                        const r = e.currentTarget.getBoundingClientRect();
+                                                        const POP = 208; // 192 (img) + 16 (padding)
+                                                        const x = r.right + 8 + POP > window.innerWidth ? r.left - POP - 8 : r.right + 8;
+                                                        const y = r.top + POP > window.innerHeight ? window.innerHeight - POP - 8 : r.top;
+                                                        setHoveredAd({ adId: ad.ad_id, x, y });
+                                                      }}
+                                                      onMouseLeave={() => setHoveredAd(null)}
+                                                    >
+                                                      {ad.ad_name}
+                                                    </span>
                                                   </td>
                                                   <td className="px-3 py-2 text-center">
                                                     {ad.status === 'ACTIVE' ? (
@@ -5966,6 +6004,7 @@
                 </tbody>
               </table>
             </div>
+            {hoveredAd && <ThumbPreview key={hoveredAd.adId} adId={hoveredAd.adId} x={hoveredAd.x} y={hoveredAd.y} />}
           </div>
         );
       };

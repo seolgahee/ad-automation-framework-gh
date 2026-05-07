@@ -127,6 +127,17 @@ GET    /api/rules/:id/log       # 실행 로그
 
 ---
 
+## Snowflake 재고/판매 스키마
+
+PRCS 스키마의 테이블 구조와 채널 컬럼 매핑은 **`docs/snowflake-schemas.md`**에 정리되어 있음.
+- 새 쿼리를 짜기 전에 반드시 참고할 것 (특히 `DW_SH_SCS_DACUM`, `DW_SH_SCS_D`, `DW_SCS_DACUM`, `DB_SCS_W`).
+- 자주 헷갈리는 포인트:
+  - `DW_SH_SCS_DACUM._SH` = 매장(오프라인 통칭, 백화점/대리점/직영점 분리 컬럼은 없음), `_ON` = 온라인, `_EV` = 행사, `_DOME` = 도매
+  - `DW_SH_SCS_D`는 채널 분리 컬럼 없음 — `SHOP_ID = '30001'`(자사몰)로만 구분
+  - DACUM 테이블은 누적 스냅샷이라 기간 합산 = `snap[end] - snap[start-1]`
+
+---
+
 ## 코딩 컨벤션
 
 - 새 DB 컬럼/테이블 추가 시 반드시 `db.js`에 migration 함수 추가 (`ALTER TABLE` 패턴 유지)

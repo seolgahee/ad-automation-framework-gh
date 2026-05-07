@@ -4891,14 +4891,14 @@
                                   <div key={s.size} className="flex justify-between">
                                     <span className="text-slate-500">{s.size}</span>
                                     <span className={`font-semibold ${s.wh === 0 ? 'text-red-500' : s.wh <= 5 ? 'text-amber-600' : 'text-slate-700'}`}>
-                                      창고 {s.wh} / 전체 {s.total}
+                                      온라인 {s.wh} / 전체 {s.total}
                                     </span>
                                   </div>
                                 ))}
                                 {stock.colors && stock.colors.slice(0, 3).map(c => (
                                   <div key={c.color} className="flex justify-between">
                                     <span className="text-slate-500">{c.color}</span>
-                                    <span className="font-semibold text-slate-700">창고 {c.wh} / 전체 {c.total}</span>
+                                    <span className="font-semibold text-slate-700">온라인 {c.wh} / 전체 {c.total}</span>
                                   </div>
                                 ))}
                                 {isOwn && (
@@ -5677,14 +5677,14 @@
             style={{ left: x, top: y }}
           >
             {failed ? (
-              <div className="w-48 h-48 flex items-center justify-center text-xs text-ppl-sub bg-gray-50 rounded">
+              <div className="w-72 h-72 flex items-center justify-center text-xs text-ppl-sub bg-gray-50 rounded">
                 이미지 없음
               </div>
             ) : (
               <img
                 src={`${API}/meta/creative-thumbnail/${adId}`}
                 alt=""
-                className="w-48 h-48 object-contain rounded bg-gray-50"
+                className="w-72 h-72 object-contain rounded bg-gray-50"
                 onError={() => setFailed(true)}
               />
             )}
@@ -5724,9 +5724,23 @@
         const fmtNum = v => v == null ? '-' : Math.round(v).toLocaleString('ko-KR');
         const fmtRoas = v => v == null || v === 0 ? '-' : v.toFixed(2);
 
+        // 컬러 단위 최악 위험도 → 정렬 키 (danger=0, caution=1, safe=2, none=9)
+        const colorRiskRank = (item) => {
+          const da = item.daily_avg || 0;
+          if (da <= 0 || !item.colors || item.colors.length === 0) return 9;
+          let worst = 2;
+          for (const c of item.colors) {
+            const days = Math.round((c.wh || 0) / da);
+            if (days <= 7) return 0;
+            if (days <= 14 && worst > 1) worst = 1;
+          }
+          return worst;
+        };
+
         const sortedItems = (data?.items || []).slice().sort((a, b) => {
           const riskOrder = { danger: 0, caution: 1, safe: 2, no_sales: 3, none: 4 };
           if (sortKey === 'risk') return (riskOrder[a.risk] ?? 9) - (riskOrder[b.risk] ?? 9);
+          if (sortKey === 'colorRisk') return colorRiskRank(a) - colorRiskRank(b);
           if (sortKey === 'sales') return (b.daily_avg || 0) - (a.daily_avg || 0);
           if (sortKey === 'spend') return (b.total_spend || 0) - (a.total_spend || 0);
           if (sortKey === 'days') return (a.days_of_supply ?? 9999) - (b.days_of_supply ?? 9999);
@@ -5739,11 +5753,57 @@
 
         const { summary } = data;
 
+        // O2O RT 권장 집계 (행 렌더링과 동일 조건: 온라인 ≤ 14일 AND 매장 ≥ 21일)
+        const computeRt = (item) => {
+          const wh = item.wh_stock || 0;
+          const totalStock = item.total_stock || 0;
+          const shStock = Math.max(0, totalStock - wh);
+          const onlineDos = item.days_of_supply;
+          const offlineDailyAvg = item.daily_avg_offline || 0;
+          const offlineDos = offlineDailyAvg > 0 ? shStock / offlineDailyAvg : (shStock > 0 ? Infinity : 0);
+          const offlineHoarding = offlineDos === Infinity || offlineDos >= 21;
+          if (onlineDos == null || shStock <= 0 || !offlineHoarding) return null;
+          if (onlineDos <= 7 && (offlineDos === Infinity || offlineDos >= 30)) return 'urgent';
+          if (onlineDos <= 14) return 'advise';
+          return null;
+        };
+        const rtFlagged = (data.items || [])
+          .map(it => ({ ...it, _rt: computeRt(it) }))
+          .filter(it => it._rt);
+        const rtUrgentCount = rtFlagged.filter(it => it._rt === 'urgent').length;
+        const rtTotal       = rtFlagged.length;
+        const rtTopNames = rtFlagged
+          .sort((a, b) => (a._rt === 'urgent' ? 0 : 1) - (b._rt === 'urgent' ? 0 : 1)
+                       || (a.days_of_supply ?? 99) - (b.days_of_supply ?? 99))
+          .slice(0, 3)
+          .map(it => it.prdt_nm ? `${it.part_cd} · ${it.prdt_nm}` : it.part_cd);
+
+        // 광고 액션 후보 집계
+        //   🛑 OFF 후보: ON 상태 AND ROAS < 1.0 AND 기간 누적 지출 ≥ ₩100,000
+        //   🚀 재가동 후보: OFF 상태 AND ROAS ≥ 3.0 AND 기간 누적 지출 > 0 (= 일부 구간 활성이었음)
+        const allAds = (data.items || []).flatMap(it =>
+          (it.ads || []).map(a => ({ ...a, _prdt_nm: it.prdt_nm, _part_cd: it.part_cd }))
+        );
+        const adLabel = (a) => a._prdt_nm ? `${a._part_cd} · ${a._prdt_nm}` : (a._part_cd || (a.ad_name || '').slice(0, 30));
+        const offCandidates = allAds.filter(a => a.status === 'ACTIVE' && a.roas < 1.0 && a.spend >= 100000);
+        const restartCandidates = allAds.filter(a => a.status === 'PAUSED' && a.roas >= 3.0 && a.spend > 0);
+        const offTotalSpend = offCandidates.reduce((s, a) => s + a.spend, 0);
+        const offAvgRoas = offCandidates.length > 0 ? offCandidates.reduce((s, a) => s + a.roas, 0) / offCandidates.length : 0;
+        const offTopAd = offCandidates.slice().sort((a, b) => b.spend - a.spend)[0];
+        const restartTopAd = restartCandidates.slice().sort((a, b) => b.roas - a.roas)[0];
+
         return (
           <div className="space-y-6">
             <div>
               <h2 className="text-xl font-semibold text-ppl-text">재고 현황</h2>
-              <p className="text-sm text-ppl-sub mt-0.5">재고는 항상 최신 기준 · 광고 지출과 일평균 판매는 선택 기간 기준</p>
+              <p className="text-sm text-ppl-sub mt-0.5">재고는 항상 최신 기준 · 광고 지출과 일평균 판매(공식몰/오프라인)는 선택 기간 기준</p>
+              <p className="text-xs text-ppl-sub mt-1.5 flex flex-wrap items-center gap-1.5">
+                <span>O2O 재배치 신호 →</span>
+                <span className="inline-block px-1.5 py-0.5 rounded bg-red-50 text-red-700 font-medium">⬅ 오프라인 RT 시급</span>
+                <span>·</span>
+                <span className="inline-block px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-medium">⬅ 오프라인 RT</span>
+                <span className="text-ppl-sub">— 온라인 재고일수 ≤ 14일 AND 매장 재고일수 ≥ 21일 (시급: 7일/30일). 매장도 빨리 팔리면 신호 없음 — 매장 다채널 합산이라 매출 비중 대신 재고일수로 비교</span>
+              </p>
             </div>
 
             {/* 기간 선택 */}
@@ -5777,24 +5837,76 @@
               )}
             </div>
 
-            {/* 요약 카드 — 컬러 단위 */}
-            <div className="grid grid-cols-4 gap-4">
+            {/* 요약 카드 — 컬러 단위 + RT 필요 */}
+            <div className="grid grid-cols-5 gap-4">
               {[
                 { label: 'Meta 총 지출', value: fmtKrw(summary.total_spend), color: 'text-ppl-text' },
                 { label: '🔴 위험 컬러', value: `${summary.danger_color_count ?? 0}개`, color: 'text-red-600' },
                 { label: '🟡 주의 컬러', value: `${summary.caution_color_count ?? 0}개`, color: 'text-amber-600' },
                 { label: '🟢 안전 컬러', value: `${summary.safe_color_count ?? 0}개`, color: 'text-green-600' },
+                { label: '🔄 오프라인 RT 필요', value: rtTotal > 0 ? `${rtTotal}개` : '0개', sub: rtUrgentCount > 0 ? `시급 ${rtUrgentCount}` : null, color: rtUrgentCount > 0 ? 'text-red-600' : rtTotal > 0 ? 'text-amber-600' : 'text-ppl-sub' },
               ].map((c, i) => (
                 <div key={i} className="bg-white border border-ppl-border rounded-xl p-4">
                   <p className="text-xs text-ppl-sub mb-1">{c.label}</p>
                   <p className={`text-2xl font-bold ${c.color}`}>{c.value}</p>
+                  {c.sub && <p className="text-[10px] text-red-600 mt-0.5 font-medium">{c.sub}</p>}
                 </div>
               ))}
             </div>
 
+            {/* RT 권장 한줄 요약 — 상위 3개 품번 */}
+            {rtTotal > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5 text-xs text-amber-900">
+                <span className="font-semibold">🔄 오프라인 RT 권장</span>
+                {' — '}
+                {rtTopNames.map((n, i) => (
+                  <span key={i}>
+                    {i > 0 && ', '}
+                    <span className="font-semibold">「{n}」</span>
+                  </span>
+                ))}
+                {rtTotal > rtTopNames.length && <span> 외 {rtTotal - rtTopNames.length}개</span>}
+                <span className="text-amber-700"> — 온라인 재고 부족 + 매장 재고 여유. 오프라인에서 RT 받아 온라인 출고 권장</span>
+              </div>
+            )}
+
+            {/* 광고 액션 권장 — OFF 후보 + 재가동 후보 */}
+            {(offCandidates.length > 0 || restartCandidates.length > 0) && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 text-xs text-blue-900 space-y-1">
+                <div className="font-semibold">💸 광고 액션 필요</div>
+                {offCandidates.length > 0 && (
+                  <div>
+                    🛑 <span className="font-semibold">OFF 후보 {offCandidates.length}개</span>
+                    <span className="text-blue-700"> — ROAS &lt; 1.0 + 지출 ≥ ₩100K, 손실 누적 {fmtKrw(offTotalSpend)} (평균 ROAS {offAvgRoas.toFixed(2)})</span>
+                    {offTopAd && (
+                      <>
+                        {' · 상위: '}
+                        <span className="font-semibold">「{adLabel(offTopAd)}」</span>
+                        {offCandidates.length > 1 && <span> 외 {offCandidates.length - 1}개</span>}
+                      </>
+                    )}
+                  </div>
+                )}
+                {restartCandidates.length > 0 && (
+                  <div>
+                    🚀 <span className="font-semibold">재가동 후보 {restartCandidates.length}개</span>
+                    <span className="text-blue-700"> — OFF 상태인데 기간 ROAS ≥ 3.0, 재가동 시 매출 회수 가능</span>
+                    {restartTopAd && (
+                      <>
+                        {' · 상위: '}
+                        <span className="font-semibold">「{adLabel(restartTopAd)}」</span>
+                        <span className="text-blue-700"> (ROAS {restartTopAd.roas.toFixed(2)})</span>
+                        {restartCandidates.length > 1 && <span> 외 {restartCandidates.length - 1}개</span>}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* 정렬 */}
             <div className="flex gap-2">
-              {[['risk', '위험도순'], ['sales', '일평균 판매순'], ['spend', '지출순'], ['days', '재고일수순'], ['roas', 'ROAS순']].map(([k, l]) => (
+              {[['risk', '위험도순'], ['colorRisk', '컬러 위험도순'], ['sales', '일평균 판매순'], ['spend', '지출순'], ['days', '재고일수순'], ['roas', 'ROAS순']].map(([k, l]) => (
                 <button key={k} onClick={() => setSortKey(k)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${sortKey === k ? 'bg-ppl-teal text-white border-ppl-teal' : 'bg-white text-ppl-sub border-ppl-border hover:bg-ppl-hover'}`}>
                   {l}
@@ -5807,14 +5919,14 @@
               <table className="w-full text-sm">
                 <thead className="bg-ppl-bg border-b border-ppl-border">
                   <tr>
-                    {['위험도', '컬러', '품번', '상품명', '창고재고', '전체재고', '재고일수', '일평균판매', '출고일자', '라이브시작', 'Meta 기간지출', 'ROAS', '소재수'].map(h => (
+                    {['위험도', '컬러', '품번', '상품명', '온라인 재고', '전체 재고', '온라인 재고일수', '공식몰 일평균판매', '오프라인 일평균판매', '출고일자', '라이브시작', 'Meta 기간지출', 'ROAS', '소재수'].map(h => (
                       <th key={h} className="text-left px-3 py-2.5 text-xs font-medium text-ppl-sub whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {sortedItems.length === 0 ? (
-                    <tr><td colSpan="13" className="text-center py-12 text-ppl-sub">데이터가 없습니다. Meta 광고 성과 수집 후 확인하세요.</td></tr>
+                    <tr><td colSpan="14" className="text-center py-12 text-ppl-sub">데이터가 없습니다. Meta 광고 성과 수집 후 확인하세요.</td></tr>
                   ) : sortedItems.map((item, i) => {
                     const rc = riskConfig[item.risk] || riskConfig.none;
                     const isOpen = !!expanded[item.part_cd];
@@ -5832,6 +5944,27 @@
                         if (days <= 14 && colorWorstRisk !== 'danger') colorWorstRisk = 'caution';
                       }
                     }
+
+                    // O2O RT 권장 — 재고일수 비교로 판단 (오프라인은 다채널 합산이라 매출 비중은 의미 없음)
+                    //   1) 온라인 재고일수 ≤ 14일 (온라인이 실제로 부족)
+                    //   2) 매장 재고일수가 충분히 높음 (≥ 21일) 또는 매장 판매가 0 → "오프라인이 사장시키고 있음"
+                    //   매장도 빨리 팔리고 있으면(매장재고일수 < 21) RT 빼앗는 게 손해라 신호 없음
+                    const wh = item.wh_stock || 0;
+                    const totalStock = item.total_stock || 0;
+                    const shStock = Math.max(0, totalStock - wh);
+                    const onlineDos = item.days_of_supply;
+                    const offlineDailyAvg = item.daily_avg_offline || 0;
+                    const offlineDos = offlineDailyAvg > 0 ? shStock / offlineDailyAvg : (shStock > 0 ? Infinity : 0);
+                    const offlineHoarding = offlineDos === Infinity || offlineDos >= 21;
+                    let rtState = null;
+                    if (onlineDos != null && shStock > 0 && offlineHoarding) {
+                      if (onlineDos <= 7 && (offlineDos === Infinity || offlineDos >= 30)) rtState = 'urgent';
+                      else if (onlineDos <= 14)                                              rtState = 'advise';
+                    }
+                    const rtBg    = rtState === 'urgent' ? 'bg-red-50'    : rtState === 'advise' ? 'bg-amber-50'   : '';
+                    const rtText  = rtState === 'urgent' ? 'text-red-700' : rtState === 'advise' ? 'text-amber-700' : '';
+                    const rtLabel = rtState === 'urgent' ? '⬅ 오프라인 RT 시급' : rtState === 'advise' ? '⬅ 오프라인 RT' : null;
+                    const offlineDosLabel = offlineDos === Infinity ? '∞' : Math.round(offlineDos);
                     return (
                       <React.Fragment key={i}>
                         <tr
@@ -5870,10 +6003,17 @@
                           <td className="px-3 py-3 text-xs text-ppl-sub max-w-[160px] truncate" title={item.prdt_nm}>{item.prdt_nm || '-'}</td>
                           <td className="px-3 py-3 text-right tabular-nums">{fmtNum(item.wh_stock)}</td>
                           <td className="px-3 py-3 text-right tabular-nums">{fmtNum(item.total_stock)}</td>
-                          <td className={`px-3 py-3 text-right tabular-nums font-semibold ${item.risk === 'danger' ? 'text-red-600' : item.risk === 'caution' ? 'text-amber-600' : 'text-green-600'}`}>
-                            {item.days_of_supply != null ? `${item.days_of_supply}일` : '-'}
+                          <td className={`px-3 py-3 text-right tabular-nums font-semibold ${rtBg} ${item.risk === 'danger' ? 'text-red-600' : item.risk === 'caution' ? 'text-amber-600' : 'text-green-600'}`}>
+                            <div>{item.days_of_supply != null ? `${item.days_of_supply}일` : '-'}</div>
+                            {rtLabel && (
+                              <>
+                                <div className={`text-[10px] font-medium mt-0.5 ${rtText}`}>{rtLabel}</div>
+                                <div className="text-[10px] text-ppl-sub font-normal">매장 {offlineDosLabel}일</div>
+                              </>
+                            )}
                           </td>
                           <td className="px-3 py-3 text-right tabular-nums text-ppl-sub">{item.daily_avg != null ? item.daily_avg.toFixed(1) : '-'}</td>
+                          <td className="px-3 py-3 text-right tabular-nums text-ppl-sub">{item.daily_avg_offline != null ? item.daily_avg_offline.toFixed(1) : '-'}</td>
                           <td className="px-3 py-3 text-xs text-ppl-sub whitespace-nowrap">{item.delv_dt_1st || '-'}</td>
                           <td className="px-3 py-3 text-xs text-ppl-sub whitespace-nowrap">{item.launch_date || '-'}</td>
                           <td className="px-3 py-3 text-right tabular-nums font-semibold">{fmtKrw(item.total_spend)}</td>
@@ -5884,7 +6024,7 @@
                         </tr>
                         {isOpen && (
                           <tr className="border-b border-ppl-border">
-                            <td colSpan="13" className="px-6 py-4 bg-slate-50">
+                            <td colSpan="14" className="px-6 py-4 bg-slate-50">
                               <div className="space-y-4">
 
                                 {/* 컬러별 재고 */}
@@ -5900,7 +6040,7 @@
                                           <div key={ci} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs ${colorRisk === 'danger' ? 'bg-red-50 border-red-200' : colorRisk === 'caution' ? 'bg-amber-50 border-amber-200' : 'bg-white border-ppl-border'}`}>
                                             <span className={`w-2 h-2 rounded-full shrink-0 ${crc.dot}`}></span>
                                             <span className="font-semibold text-ppl-text">{c.color}</span>
-                                            <span className="text-ppl-sub">창고 <strong>{fmtNum(c.wh)}</strong></span>
+                                            <span className="text-ppl-sub">온라인 <strong>{fmtNum(c.wh)}</strong></span>
                                             <span className="text-ppl-sub">전체 <strong>{fmtNum(c.total)}</strong></span>
                                             {colorDays != null && (
                                               <span className={`font-bold ${colorRisk === 'danger' ? 'text-red-600' : colorRisk === 'caution' ? 'text-amber-600' : 'text-green-600'}`}>{colorDays}일</span>
@@ -5909,7 +6049,7 @@
                                         );
                                       })}
                                     </div>
-                                    <p className="text-[10px] text-ppl-sub mt-1.5">재고일수 = 창고재고 ÷ 품번 일평균 {dailyAvg.toFixed(1)}개/일</p>
+                                    <p className="text-[10px] text-ppl-sub mt-1.5">온라인 재고일수 = 온라인 재고 ÷ 공식몰 일평균 {dailyAvg.toFixed(1)}개/일</p>
                                   </div>
                                 )}
 
@@ -5931,11 +6071,11 @@
                                               <th className="text-left px-3 py-2 font-medium text-ppl-sub">소재명</th>
                                               <th className="text-center px-3 py-2 font-medium text-ppl-sub">상태</th>
                                               <th className="text-right px-3 py-2 font-medium text-ppl-sub">라이브시작</th>
-                                              <th className="text-right px-3 py-2 font-medium text-ppl-sub">지출</th>
+                                              <th className="text-right px-3 py-2 font-medium text-ppl-sub">누적 지출</th>
                                               <th className="text-right px-3 py-2 font-medium text-ppl-sub">ROAS</th>
-                                              <th className="text-right px-3 py-2 font-medium text-ppl-sub">전환</th>
+                                              <th className="text-right px-3 py-2 font-medium text-ppl-sub">누적 전환</th>
                                               <th className="text-right px-3 py-2 font-medium text-ppl-sub">CPC</th>
-                                              <th className="text-right px-3 py-2 font-medium text-ppl-sub">노출</th>
+                                              <th className="text-right px-3 py-2 font-medium text-ppl-sub">누적 노출</th>
                                               <th className="text-center px-3 py-2 font-medium text-ppl-sub">등급</th>
                                             </tr>
                                           </thead>
@@ -5956,7 +6096,7 @@
                                                       title={ad.ad_name}
                                                       onMouseEnter={(e) => {
                                                         const r = e.currentTarget.getBoundingClientRect();
-                                                        const POP = 208; // 192 (img) + 16 (padding)
+                                                        const POP = 304; // 288 (img w-72) + 16 (padding)
                                                         const x = r.right + 8 + POP > window.innerWidth ? r.left - POP - 8 : r.right + 8;
                                                         const y = r.top + POP > window.innerHeight ? window.innerHeight - POP - 8 : r.top;
                                                         setHoveredAd({ adId: ad.ad_id, x, y });
@@ -5978,7 +6118,7 @@
                                                   <td className="px-3 py-2 text-right text-ppl-sub whitespace-nowrap">{ad.launch_date}</td>
                                                   <td className="px-3 py-2 text-right font-semibold text-ppl-text tabular-nums">{fmtKrw(ad.spend)}</td>
                                                   <td className={`px-3 py-2 text-right tabular-nums ${roasColor}`}>{ad.spend > 0 ? ad.roas.toFixed(2) : '-'}</td>
-                                                  <td className="px-3 py-2 text-right tabular-nums text-ppl-sub">{ad.value > 0 ? (ad.value / (ad.spend > 0 ? ad.roas : 1)).toFixed(0) : '-'}</td>
+                                                  <td className="px-3 py-2 text-right tabular-nums text-ppl-sub">{ad.conversions > 0 ? fmtNum(ad.conversions) : '-'}</td>
                                                   <td className="px-3 py-2 text-right tabular-nums text-ppl-sub">{ad.cpc > 0 ? fmtKrw(ad.cpc) : '-'}</td>
                                                   <td className="px-3 py-2 text-right tabular-nums text-ppl-sub">{fmtNum(ad.impressions)}</td>
                                                   <td className="px-3 py-2 text-center">

@@ -225,10 +225,30 @@ export async function fetchStockInfoBatch(partCds, options = {}) {
       GROUP BY PART_CD
     `, saleBinds);
 
+    // 오프라인(백화점/대리점/직영점) 판매 — DB_SHOP.ANAL_DIST_TYPE_NM으로 매장 필터링 후 일별 합산
+    const offlineBinds = [BRAND_CD, BRAND_CD, ...partCds];
+    if (useRange) offlineBinds.push(saleStart, saleEnd);
+
+    const offlineSaleRows = await executeAsync(conn, `
+      WITH offline_shops AS (
+        SELECT SHOP_ID FROM ${DATABASE}.${SCHEMA}.DB_SHOP
+        WHERE BRD_CD = ?
+          AND ANAL_DIST_TYPE_NM IN ('백화점', '대리점', '직영점')
+      )
+      SELECT s.PART_CD, SUM(s.SALE_NML_QTY - s.SALE_RET_QTY) AS SALE_QTY
+      FROM ${DATABASE}.${SCHEMA}.DW_SH_SCS_D s
+      JOIN offline_shops os ON s.SHOP_ID = os.SHOP_ID
+      WHERE s.BRD_CD = ?
+        AND s.PART_CD IN (${placeholders})
+        ${dateClause.replace(/DT /g, 's.DT ')}
+      GROUP BY s.PART_CD
+    `, offlineBinds);
+
     const periodDays = useRange
       ? Math.max(1, Math.round((Date.parse(saleEnd) - Date.parse(saleStart)) / 86400000) + 1)
       : 7;
     const saleMap = new Map(saleRows.map(r => [r.PART_CD, parseInt(r.SALE_QTY || 0, 10)]));
+    const offlineSaleMap = new Map(offlineSaleRows.map(r => [r.PART_CD, parseInt(r.SALE_QTY || 0, 10)]));
 
     const grouped = new Map();
     for (const row of stockRows) {
@@ -247,17 +267,21 @@ export async function fetchStockInfoBatch(partCds, options = {}) {
     for (const [partCd, g] of grouped) {
       const sale     = saleMap.get(partCd) || 0;
       const dailyAvg = Math.round((sale / periodDays) * 10) / 10;
+      const offlineSale     = offlineSaleMap.get(partCd) || 0;
+      const dailyAvgOffline = Math.round((offlineSale / periodDays) * 10) / 10;
       const totalWh  = g.colors.reduce((s, c) => s + c.wh, 0);
       const dos      = dailyAvg > 0 ? Math.round(totalWh / dailyAvg) : null;
       const isMc     = (g.prdt_nm || '').toUpperCase().split(' ').includes('MC');
       result.set(partCd, {
-        prdt_nm:        g.prdt_nm,
-        is_mc:          isMc,
-        delv_dt_1st:    g.delv_dt_1st,
-        sale_7d:        sale,
-        daily_avg:      dailyAvg,
-        days_of_supply: dos,
-        colors:         g.colors,
+        prdt_nm:           g.prdt_nm,
+        is_mc:             isMc,
+        delv_dt_1st:       g.delv_dt_1st,
+        sale_7d:           sale,
+        daily_avg:         dailyAvg,
+        sale_offline:      offlineSale,
+        daily_avg_offline: dailyAvgOffline,
+        days_of_supply:    dos,
+        colors:            g.colors,
       });
     }
     return result;

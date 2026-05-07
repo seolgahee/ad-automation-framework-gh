@@ -316,7 +316,7 @@ export class MetaAdsClient extends BaseAdsClient {
     for (let i = 0; i < adIds.length; i += batchSize) {
       const batch = adIds.slice(i, i + batchSize);
       try {
-        const fields = ['id', 'creative{id,image_hash,thumbnail_url,object_story_spec,asset_feed_spec}'];
+        const fields = ['id', 'creative{id,image_hash,image_url,thumbnail_url,object_story_spec,asset_feed_spec}'];
         const params = { ids: batch.join(','), fields: fields.join(',') };
 
         const response = await this._withTimeout(
@@ -330,8 +330,10 @@ export class MetaAdsClient extends BaseAdsClient {
 
           const hashes = [];
 
-          // thumbnail_url은 크리에이티브의 실제 CDN 직접 URL (고해상도) — 항상 저장
-          if (adData.thumbnail_url) {
+          // image_url(원본 풀해상도) > thumbnail_url(64–128px 썸네일)
+          if (adData.image_url) {
+            fallbackThumbnails.set(adId, adData.image_url);
+          } else if (adData.thumbnail_url) {
             fallbackThumbnails.set(adId, adData.thumbnail_url);
           }
 
@@ -371,17 +373,9 @@ export class MetaAdsClient extends BaseAdsClient {
       selectedHashToAdIds.get(best).push(adId);
     }
 
-    // thumbnail_url (크리에이티브 직접 CDN URL)을 우선 사용
-    // AdImages API의 url_128(128px)보다 thumbnail_url이 고해상도
-    for (const [adId, thumbUrl] of fallbackThumbnails) {
-      imageMap.set(adId, thumbUrl);
-    }
-
-    // thumbnail_url 없는 광고는 AdImages API url_128로 보완
-    const needsAdImages = [...selectedHashToAdIds.entries()]
-      .filter(([, adIds]) => adIds.some(id => !imageMap.has(id)));
-    if (needsAdImages.length > 0) {
-      const missingHashes = needsAdImages.map(([hash]) => hash);
+    // AdImages API의 url(원본 풀해상도)을 최우선으로 사용
+    const missingHashes = [...selectedHashToAdIds.keys()];
+    if (missingHashes.length > 0) {
       try {
         const hashBatchSize = 50;
         for (let i = 0; i < missingHashes.length; i += hashBatchSize) {
@@ -389,15 +383,15 @@ export class MetaAdsClient extends BaseAdsClient {
           const response = await this._withTimeout(
             this.api.call('GET', [this.accountId, 'adimages'], {
               hashes: JSON.stringify(hashBatch),
-              fields: 'url_128,hash',
+              fields: 'url,hash',
             }),
             'getAdImages'
           );
           const images = response?.data || [];
           for (const img of images) {
-            if (img.url_128 && selectedHashToAdIds.has(img.hash)) {
+            if (img.url && selectedHashToAdIds.has(img.hash)) {
               for (const adId of selectedHashToAdIds.get(img.hash)) {
-                if (!imageMap.has(adId)) imageMap.set(adId, img.url_128);
+                imageMap.set(adId, img.url);
               }
             }
           }
@@ -405,6 +399,11 @@ export class MetaAdsClient extends BaseAdsClient {
       } catch (err) {
         logger.warn('Failed to resolve image hashes to CDN URLs', { error: err.message });
       }
+    }
+
+    // image_hash로 해결되지 않은 ad는 creative.image_url 또는 thumbnail_url로 보완
+    for (const [adId, fallbackUrl] of fallbackThumbnails) {
+      if (!imageMap.has(adId)) imageMap.set(adId, fallbackUrl);
     }
 
     logger.info(`Resolved ${imageMap.size}/${adIds.length} ad creative image URLs (CDN-direct)`);

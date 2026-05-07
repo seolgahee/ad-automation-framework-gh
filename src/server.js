@@ -1683,11 +1683,17 @@ app.get('/api/meta/creative-thumbnail/:adId', async (req, res) => {
     return res.send(Buffer.from(libRow.image_data));
   }
 
-  // 2) 로컬 캐시
+  // 2) 로컬 캐시 (5KB 미만은 저화질 썸네일이므로 무효화하고 재다운로드)
   if (fs.existsSync(localPath)) {
-    res.setHeader('Content-Type', 'image/jpeg');
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-    return fs.createReadStream(localPath).pipe(res);
+    try {
+      const stat = fs.statSync(localPath);
+      if (stat.size >= 5000) {
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        return fs.createReadStream(localPath).pipe(res);
+      }
+      fs.unlinkSync(localPath);
+    } catch (_) {}
   }
 
   // 3) Meta CDN 프록시 (stp 파라미터 제거 → 원본 품질)
@@ -3086,6 +3092,7 @@ app.get('/api/inventory-dashboard', async (req, res) => {
       MIN(date_start)       AS first_date,
       SUM(spend)            AS total_spend,
       SUM(conversion_value) AS total_value,
+      SUM(conversions)      AS total_conversions,
       SUM(impressions)      AS total_impressions,
       SUM(clicks)           AS total_clicks
     FROM ad_performance
@@ -3124,6 +3131,7 @@ app.get('/api/inventory-dashboard', async (req, res) => {
       launch_date: launchDate,
       spend: row.total_spend,
       value: row.total_value,
+      conversions: row.total_conversions,
       impressions: row.total_impressions,
       clicks: row.total_clicks,
       roas: row.total_spend > 0 ? row.total_value / row.total_spend : 0,
@@ -3182,6 +3190,7 @@ app.get('/api/inventory-dashboard', async (req, res) => {
       wh_stock: whStock,
       total_stock: totalStock,
       daily_avg: stock?.daily_avg ?? null,
+      daily_avg_offline: stock?.daily_avg_offline ?? null,
       sale_7d: stock?.sale_7d ?? null,
       days_of_supply: days ?? null,
       risk,

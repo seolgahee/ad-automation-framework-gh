@@ -5692,6 +5692,103 @@
         );
       };
 
+      const SellThroughChart = ({ partCd }) => {
+        const [data, setData] = React.useState(null);
+        const [loading, setLoading] = React.useState(true);
+        const [error, setError] = React.useState(null);
+
+        React.useEffect(() => {
+          let cancelled = false;
+          setLoading(true);
+          apiFetch(`${API}/inventory/sell-through/${partCd}`)
+            .then(r => r.ok ? r.json() : Promise.reject(new Error('fetch_failed')))
+            .then(d => { if (!cancelled) { setData(d); setLoading(false); } })
+            .catch(e => { if (!cancelled) { setError(e.message); setLoading(false); } });
+          return () => { cancelled = true; };
+        }, [partCd]);
+
+        if (loading) return <div className="text-xs text-ppl-sub py-2">📈 판매소진율 곡선 로딩 중…</div>;
+        if (error || !data) return <div className="text-xs text-red-500 py-2">📈 판매소진율 데이터 조회 실패</div>;
+        if (!data.delv_dt_1st) return <div className="text-xs text-ppl-sub py-2">📈 출고일자 없음 — 곡선 표시 불가</div>;
+        if (!data.curve || data.curve.length === 0) return <div className="text-xs text-ppl-sub py-2">📈 출고 후 판매 데이터 없음</div>;
+
+        const cohortByWeek = {};
+        (data.cohort?.curve || []).forEach(c => { cohortByWeek[c.week] = c; });
+
+        // self / cohort week 합집합 (cohort가 더 길면 cohort 곡선만 더 보이도록)
+        const selfByWeek = {};
+        data.curve.forEach(p => { selfByWeek[p.week] = p; });
+        const allWeeks = [...new Set([...Object.keys(selfByWeek), ...Object.keys(cohortByWeek)].map(Number))].sort((a, b) => a - b);
+
+        const chartData = allWeeks.map(w => {
+          const s = selfByWeek[w];
+          const co = cohortByWeek[w];
+          const p25 = co?.p25 ?? null;
+          const p75 = co?.p75 ?? null;
+          return {
+            week: w,
+            self: s?.sell_through_pct ?? null,
+            p50:  co?.p50 ?? null,
+            p25,
+            band: (p25 != null && p75 != null) ? Math.max(0, p75 - p25) : null,
+          };
+        });
+
+        const cohortSize = data.cohort?.size || 0;
+        const weeksElapsed = data.curve[data.curve.length - 1]?.week ?? 0;
+        const lastSelf = data.curve[data.curve.length - 1]?.sell_through_pct;
+        const lastP50  = (data.cohort?.curve || []).filter(c => c.week <= weeksElapsed).slice(-1)[0]?.p50;
+
+        return (
+          <div>
+            <p className="text-xs font-semibold text-ppl-sub mb-2">
+              📈 출고 후 판매소진율 추세
+              <span className="font-normal ml-2">
+                (출고 {data.delv_dt_1st} · {weeksElapsed}주차 경과 · 종류 <strong>{data.category || '-'}</strong> · {data.sesn} · 비교 <strong>{cohortSize}</strong>개 품번)
+              </span>
+              {lastSelf != null && lastP50 != null && (
+                <span className={`ml-3 px-2 py-0.5 rounded-full text-[10px] font-bold ${lastSelf >= lastP50 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>
+                  {lastSelf >= lastP50 ? '평균보다 잘 팔림' : '평균보다 안 팔림'} (이 품번 {lastSelf.toFixed(1)}% / 비슷한 품번 평균 {lastP50.toFixed(1)}%)
+                </span>
+              )}
+            </p>
+            {cohortSize > 0 && cohortSize < 5 && (
+              <p className="text-[10px] text-amber-600 mb-2">⚠️ 비교할 품번이 적음 (n={cohortSize}) — 이 품번 곡선만 표시됩니다.</p>
+            )}
+            <div className="bg-white border border-ppl-border rounded-xl p-3" style={{height: 320}}>
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={chartData} margin={{top: 10, right: 20, bottom: 30, left: 0}}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="week" type="number" domain={['dataMin', 'dataMax']}
+                    label={{value: '출고 후 주차', position: 'insideBottom', offset: -15, style: {fontSize: 11, fill: '#64748b'}}}
+                    tick={{fontSize: 11}} />
+                  <YAxis domain={[0, 100]}
+                    tickFormatter={v => `${v}%`}
+                    tick={{fontSize: 11}}
+                    label={{value: '판매소진율 %', angle: -90, position: 'insideLeft', style: {fontSize: 11, fill: '#64748b'}}} />
+                  <Tooltip
+                    formatter={(v, name) => [v == null ? '-' : `${Number(v).toFixed(1)}%`, name]}
+                    labelFormatter={w => `${w}주차`}
+                  />
+                  <Legend verticalAlign="top" align="right" height={28} wrapperStyle={{fontSize: 11, paddingBottom: 4}} />
+                  {cohortSize >= 5 && (
+                    <>
+                      <Area type="monotone" dataKey="p25" stackId="band" stroke="none" fill="transparent" legendType="none" name="p25" />
+                      <Area type="monotone" dataKey="band" stackId="band" stroke="none" fill="#cbd5e1" fillOpacity={0.5} name="비슷한 품번 보통 범위" />
+                      <Line type="monotone" dataKey="p50" stroke="#64748b" strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="비슷한 품번 평균" />
+                    </>
+                  )}
+                  <Line type="monotone" dataKey="self" stroke="#0d9488" strokeWidth={2.5} dot={{r: 3}} name="이 품번" connectNulls />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+            <p className="text-[10px] text-ppl-sub mt-1.5">
+              판매소진율 = 누적 판매 ÷ 총입고량({data.total_inflow.toLocaleString('ko-KR')}개) × 100. 비교 대상 = 같은 시즌·같은 종류(품번 3~4번째 글자, 예: PD=패딩) 품번 최대 50개.
+            </p>
+          </div>
+        );
+      };
+
       const InventoryPanel = () => {
         const INVENTORY_MIN_DATE = '2026-03-01';
         const yesterdayStr = new Date(Date.now() - 86400000).toISOString().split('T')[0];
@@ -6052,6 +6149,9 @@
                                     <p className="text-[10px] text-ppl-sub mt-1.5">온라인 재고일수 = 온라인 재고 ÷ 공식몰 일평균 {dailyAvg.toFixed(1)}개/일</p>
                                   </div>
                                 )}
+
+                                {/* Sell-through 곡선 + 동기 비교 */}
+                                <SellThroughChart partCd={item.part_cd} />
 
                                 {/* 소재별 성과 */}
                                 {item.ads && item.ads.length > 0 && (() => {

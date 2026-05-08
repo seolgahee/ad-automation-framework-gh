@@ -293,6 +293,201 @@ export async function fetchStockInfoBatch(partCds, options = {}) {
   }
 }
 
+/**
+ * 출고 후 sell-through 곡선 + 동기(같은 시즌·같은 카테고리) cohort 비교
+ *
+ * Sell-through % = 누적 판매(순) ÷ 총입고량
+ *   - 분자: AC_SALE_NML_QTY_NET (DW_SH_SCS_DACUM, 해당 주 마지막 스냅샷)
+ *   - 분모: 모든 매장 누적 입고(AC_DELV_NML_QTY 최종값) + 창고 현재 재고(WH_STOCK_QTY)
+ *
+ * 카테고리 = PART_CD 3~4번째 글자 (예: DWPD42061 → "PD")
+ *
+ * @param {string} partCd
+ * @returns {object|null}
+ *   {
+ *     part_cd, prdt_nm, sesn, category, delv_dt_1st, total_inflow,
+ *     curve: [{week, week_end_date, cum_sales, sell_through_pct}],
+ *     cohort: { size, category, sesn, curve: [{week, p25, p50, p75}] }
+ *   }
+ *   delv_dt_1st 가 없으면 { part_cd, ..., delv_dt_1st: null, curve: [], cohort: {...size:0} } 반환.
+ */
+export async function fetchSellThroughCurve(partCd) {
+  const conn = createConnection();
+  try {
+    await connectAsync(conn);
+
+    // 1. 해당 품번의 SESN, DELV_DT_1ST, PRDT_NM (가장 최근 시즌 기준)
+    const selfRows = await executeAsync(conn, `
+      SELECT SESN, DELV_DT_1ST, PRDT_NM
+      FROM ${DATABASE}.${SCHEMA}.DB_PRDT
+      WHERE BRD_CD = ? AND PART_CD = ? AND DELV_DT_1ST IS NOT NULL
+      ORDER BY DELV_DT_1ST DESC
+      LIMIT 1
+    `, [BRAND_CD, partCd]);
+
+    const category = partCd.length >= 4 ? partCd.substring(2, 4) : '';
+
+    if (!selfRows || selfRows.length === 0) {
+      return {
+        part_cd: partCd, prdt_nm: '', sesn: '', category,
+        delv_dt_1st: null, total_inflow: 0,
+        curve: [], cohort: { size: 0, category, sesn: '', curve: [] },
+      };
+    }
+
+    const self = selfRows[0];
+    const sesn = self.SESN;
+    const selfLaunch = new Date(self.DELV_DT_1ST);
+
+    // 2. Cohort 품번 모집: 같은 BRD_CD + SESN + 카테고리(PART_CD[3:4]) + DELV_DT_1ST 존재
+    const cohortRows = await executeAsync(conn, `
+      SELECT PART_CD, MIN(DELV_DT_1ST) AS DELV_DT_1ST
+      FROM ${DATABASE}.${SCHEMA}.DB_PRDT
+      WHERE BRD_CD = ? AND SESN = ?
+        AND SUBSTR(PART_CD, 3, 2) = ?
+        AND DELV_DT_1ST IS NOT NULL
+        AND PART_CD != ?
+      GROUP BY PART_CD
+      ORDER BY DELV_DT_1ST DESC
+      LIMIT 50
+    `, [BRAND_CD, sesn, category, partCd]);
+
+    const partLaunch = new Map();
+    partLaunch.set(partCd, selfLaunch);
+    for (const r of cohortRows) {
+      partLaunch.set(r.PART_CD, new Date(r.DELV_DT_1ST));
+    }
+
+    const allParts = [partCd, ...cohortRows.map(r => r.PART_CD)];
+    const placeholders = allParts.map(() => '?').join(',');
+
+    // 3. 시계열 누적 판매·입고 (모든 cohort + self, 단일 쿼리)
+    const earliestLaunch = [...partLaunch.values()].reduce((min, d) => d < min ? d : min, selfLaunch);
+    const earliestStr = earliestLaunch.toISOString().split('T')[0];
+
+    const tsRows = await executeAsync(conn, `
+      SELECT PART_CD, START_DT,
+             SUM(AC_SALE_NML_QTY_NET) AS CUM_SALES_NET,
+             SUM(AC_DELV_NML_QTY)     AS CUM_DELV
+      FROM ${DATABASE}.${SCHEMA}.DW_SH_SCS_DACUM
+      WHERE BRD_CD = ?
+        AND PART_CD IN (${placeholders})
+        AND START_DT >= ?
+      GROUP BY PART_CD, START_DT
+    `, [BRAND_CD, ...allParts, earliestStr]);
+
+    // 4. 창고 현재 재고 (총입고량 분모용)
+    const whRows = await executeAsync(conn, `
+      WITH latest AS (
+        SELECT PART_CD, MAX(START_DT) AS MAX_DT
+        FROM ${DATABASE}.${SCHEMA}.DW_SCS_DACUM
+        WHERE BRD_CD = ? AND PART_CD IN (${placeholders})
+        GROUP BY PART_CD
+      )
+      SELECT d.PART_CD, SUM(d.WH_STOCK_QTY) AS WH_STOCK
+      FROM ${DATABASE}.${SCHEMA}.DW_SCS_DACUM d
+      JOIN latest l ON d.PART_CD = l.PART_CD AND d.START_DT = l.MAX_DT
+      WHERE d.BRD_CD = ? AND d.PART_CD IN (${placeholders})
+      GROUP BY d.PART_CD
+    `, [BRAND_CD, ...allParts, BRAND_CD, ...allParts]);
+
+    const whMap = new Map(whRows.map(r => [r.PART_CD, parseInt(r.WH_STOCK || 0, 10)]));
+
+    // 5. JS 집계: PART_CD × week 마지막 스냅샷 → sell-through 곡선
+    // 5-1. (PART_CD, week) 별 마지막 스냅샷
+    const WEEK_MS = 7 * 86400000;
+    const lastSnapshot = new Map(); // key: `${partCd}__${week}` → {part, week, weekEnd, cumSales, cumDelv}
+    let maxCumDelvByPart = new Map(); // 분모 계산용: part → 최대 누적 입고
+
+    for (const row of tsRows) {
+      const launch = partLaunch.get(row.PART_CD);
+      if (!launch) continue;
+      const startDt = new Date(row.START_DT);
+      if (startDt < launch) continue;
+      const week = Math.floor((startDt - launch) / WEEK_MS);
+      const cumSales = parseInt(row.CUM_SALES_NET || 0, 10);
+      const cumDelv  = parseInt(row.CUM_DELV || 0, 10);
+      const key = `${row.PART_CD}__${week}`;
+      const existing = lastSnapshot.get(key);
+      if (!existing || existing._dt < startDt) {
+        lastSnapshot.set(key, { part: row.PART_CD, week, weekEnd: row.START_DT, cumSales, cumDelv, _dt: startDt });
+      }
+      const prev = maxCumDelvByPart.get(row.PART_CD) || 0;
+      if (cumDelv > prev) maxCumDelvByPart.set(row.PART_CD, cumDelv);
+    }
+
+    // 5-2. PART_CD 별 총입고량 = max 누적 입고 + 창고 재고
+    const totalInflow = new Map();
+    for (const part of allParts) {
+      const inflow = (maxCumDelvByPart.get(part) || 0) + (whMap.get(part) || 0);
+      totalInflow.set(part, inflow);
+    }
+
+    // 5-3. PART_CD 별 weekly sell-through %
+    const curveByPart = new Map();
+    for (const { part, week, weekEnd, cumSales } of lastSnapshot.values()) {
+      const denom = totalInflow.get(part) || 0;
+      const pct = denom > 0 ? (cumSales / denom) * 100 : null;
+      if (!curveByPart.has(part)) curveByPart.set(part, []);
+      curveByPart.get(part).push({
+        week,
+        week_end_date: typeof weekEnd === 'string' ? weekEnd : weekEnd.toISOString().split('T')[0],
+        cum_sales: cumSales,
+        sell_through_pct: pct == null ? null : Math.round(pct * 10) / 10,
+      });
+    }
+    for (const arr of curveByPart.values()) {
+      arr.sort((a, b) => a.week - b.week);
+    }
+
+    // 6. Cohort 주차별 분포 → p25/p50/p75
+    const cohortParts = cohortRows.map(r => r.PART_CD);
+    const byWeek = new Map(); // week → [pct, ...]
+    for (const cp of cohortParts) {
+      const arr = curveByPart.get(cp) || [];
+      for (const p of arr) {
+        if (p.sell_through_pct == null) continue;
+        if (!byWeek.has(p.week)) byWeek.set(p.week, []);
+        byWeek.get(p.week).push(p.sell_through_pct);
+      }
+    }
+    const cohortCurve = [...byWeek.entries()]
+      .map(([week, vals]) => {
+        vals.sort((a, b) => a - b);
+        const q = (p) => vals[Math.min(vals.length - 1, Math.floor(p * (vals.length - 1)))];
+        return {
+          week,
+          p25: Math.round(q(0.25) * 10) / 10,
+          p50: Math.round(q(0.50) * 10) / 10,
+          p75: Math.round(q(0.75) * 10) / 10,
+          n: vals.length,
+        };
+      })
+      .sort((a, b) => a.week - b.week);
+
+    return {
+      part_cd:      partCd,
+      prdt_nm:      self.PRDT_NM || '',
+      sesn,
+      category,
+      delv_dt_1st:  typeof self.DELV_DT_1ST === 'string' ? self.DELV_DT_1ST : self.DELV_DT_1ST.toISOString().split('T')[0],
+      total_inflow: totalInflow.get(partCd) || 0,
+      curve:        curveByPart.get(partCd) || [],
+      cohort: {
+        size: cohortParts.length,
+        category,
+        sesn,
+        curve: cohortCurve,
+      },
+    };
+  } catch (err) {
+    logger.warn(`fetchSellThroughCurve 실패 (${partCd}): ${err.message}`);
+    return null;
+  } finally {
+    await destroyAsync(conn);
+  }
+}
+
 /** 진단용: 품번의 실제 SHOP_ID 목록 조회 */
 export async function debugSaleShops(partCd) {
   const conn = createConnection();
@@ -316,4 +511,4 @@ export async function debugSaleShops(partCd) {
   }
 }
 
-export default { fetchStockInfo, fetchStockInfoBatch, debugSaleShops };
+export default { fetchStockInfo, fetchStockInfoBatch, fetchSellThroughCurve, debugSaleShops };

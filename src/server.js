@@ -15,7 +15,7 @@ import db, { initDatabase } from './utils/db.js';
 import logger from './utils/logger.js';
 import DataCollector from './analytics/collector.js';
 import { getOptimizer, getPipeline, getTemplateEngine, getABTestEngine, getAudienceManager } from './utils/services.js';
-import { getMetaClient, getGoogleClient, getNaverClient, fetchStockInfo, fetchStockInfoBatch, debugSaleShops } from './utils/clients.js';
+import { getMetaClient, getGoogleClient, getNaverClient, fetchStockInfo, fetchStockInfoBatch, fetchSellThroughCurve, debugSaleShops } from './utils/clients.js';
 import crypto from 'crypto';
 import path from 'path';
 import { getAdapter } from './utils/platform-adapter.js';
@@ -3248,6 +3248,17 @@ app.get('/api/stock/:partCd/:colorCd?', async (req, res) => {
   const result = await fetchStockInfo(partCd, colorCd || null);
   if (!result) return res.status(404).json({ error: '재고 데이터 없음' });
   res.json(result);
+});
+
+// GET /api/inventory/sell-through/:partCd → 출고 후 sell-through 곡선 + 동기 cohort 비교
+app.get('/api/inventory/sell-through/:partCd', async (req, res) => {
+  try {
+    const result = await fetchSellThroughCurve(req.params.partCd);
+    if (!result) return res.status(500).json({ error: 'Snowflake 조회 실패' });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET /api/stock-debug/:partCd → 판매 SHOP_ID 진단
